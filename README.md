@@ -36,7 +36,7 @@ identified by the `uid` that every other line in this walk-through carries:
 
 ```
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	proto	service	duration	orig_bytes	resp_bytes	conn_state
-1788649652.185880	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	tcp	tds	1.180330	84022	34236	S2
+1788649652.185880	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	tcp	tds	1.180330	84022	34236	S2
 ```
 
 ### tds_login.log: who this is
@@ -50,7 +50,7 @@ LOGINACK or an error. All of that lands on one line per connection:
 ```
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	tds_version	client_version	server_version	client_encryption	server_encryption	encrypted	instance	mars	hostname	username	has_password	integrated_auth	app_name	server_name	library	language	database	attach_db	client_pid	client_prog_ver	client_mac	read_only_intent	odbc	oledb	change_password	server_product	server_product_version	server_tds_version	initial_database	success	error_number	error_message
 #types	time	string	addr	port	addr	port	string	string	string	string	string	bool	string	bool	string	string	bool	bool	string	string	string	string	string	string	count	count	string	bool	bool	bool	bool	string	string	string	string	bool	count	string
-1788649652.188908	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	7.4	1.0.0.0	15.0.2000.0	not_supported	not_supported	F	MSSQLServer	F	workstation-01	sa	T	F	zeek-tds-corpus	127.0.0.1	Python TDS Library	-	zeektds	-	35535	16777216	02:42:AC:11:00:02	F	T	F	F	Microsoft SQL Server	15.0.2000	7.4	zeektds	T	-	-
+1788649652.188908	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	7.4	1.0.0.0	15.0.2000.0	not_supported	not_supported	F	MSSQLServer	F	workstation-01	sa	T	F	zeek-tds-corpus	127.0.0.1	Python TDS Library	-	zeektds	-	35535	16777216	02:42:AC:11:00:02	F	T	F	F	Microsoft SQL Server	15.0.2000	7.4	zeektds	T	-	-
 ```
 
 Reading across: a TDS 7.4 client on a host calling itself `workstation-01`,
@@ -76,12 +76,12 @@ first statements:
 ```
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	is_orig	msg_type	len	packets	rows	row_count	errors
 #types	time	string	addr	port	addr	port	bool	string	count	count	count	count	count
-1788649652.186304	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	T	prelogin	50	1	-	-	-
-1788649652.187838	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	35	1	0	0	0
-1788649652.188908	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	T	login7	248	1	-	-	-
-1788649652.192683	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	385	1	0	0	0
-1788649652.193828	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	T	sql_batch	916	1	-	-	-
-1788649652.200528	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	26	1	0	0	0
+1788649652.186304	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	prelogin	50	1	-	-	-
+1788649652.187838	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	35	1	0	0	0
+1788649652.188908	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	login7	248	1	-	-	-
+1788649652.192683	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	385	1	0	0	0
+1788649652.193828	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	sql_batch	916	1	-	-	-
+1788649652.200528	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	26	1	0	0	0
 ```
 
 `is_orig` is `T` for client to server. Requests carry a type and a size;
@@ -92,8 +92,8 @@ a four-packet message with sixty rows, and in another trace a bulk load goes
 the other way:
 
 ```
-1788649652.3xxxxx	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	12995	4	60	60	0
-1788649657.xxxxxx	C...	172.19.0.1	60582	172.19.0.2	1433	T	bulk_load	12110	3	-	-	-
+1788649652.338220	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	12995	4	60	60	0
+1788649656.417964	ClyAae4GU1BSVUAKl	172.19.0.1	55272	172.19.0.2	1433	T	bulk_load	12110	3	-	-	-
 ```
 
 Volume lives here: a host that normally reads a handful of rows and one night
@@ -110,11 +110,11 @@ transaction boundaries and the statements inside them in one place:
 ```
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	transaction_descriptor	query
 #types	time	string	addr	port	addr	port	count	string
-1788649652.354631	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	0	<transaction manager: begin>
-1788649652.354934	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	219043332162	UPDATE dbo.readings SET quality = 0 WHERE id = 1
-1788649652.355940	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	0	<transaction manager: commit>
-1788649652.357826	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	0	SELECT * FROM dbo.does_not_exist
-1788649652.359079	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	0	RAISERROR('custom failure %d', 16, 1, 42)
+1788649652.354631	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	<transaction manager: begin>
+1788649652.354934	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	219043332162	UPDATE dbo.readings SET quality = 0 WHERE id = 1
+1788649652.355940	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	<transaction manager: commit>
+1788649652.357826	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	SELECT * FROM dbo.does_not_exist
+1788649652.359079	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	RAISERROR('custom failure %d', 16, 1, 42)
 ```
 
 The `transaction_descriptor` is the number the server handed out when the
@@ -151,8 +151,8 @@ it into `statement`:
 ```
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	transaction_descriptor	procedure	proc_id	with_recompile	parameters	statement	handle
 #types	time	string	addr	port	addr	port	count	string	count	bool	vector[string]	string	string
-1788649652.343290	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	0	sp_executesql	10	F	@p1 nvarchar(max) = SELECT COUNT(*) FROM dbo.readings WHERE value > @P1,@p2 nvarchar(max) = @P1 FLOAT,@P1 floatn(8) = 20	SELECT COUNT(*) FROM dbo.readings WHERE value > @P1	-
-1788649652.349416	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	0	dbo.usp_get_readings	-	F	@p1 nvarchar(max) = PUMP-00%,@p2 floatn(8) = 10,@p3 intn(4) output = 0	-	-
+1788649652.343290	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	sp_executesql	10	F	@p1 nvarchar(max) = SELECT COUNT(*) FROM dbo.readings WHERE value > @P1,@p2 nvarchar(max) = @P1 FLOAT,@P1 floatn(8) = 20	SELECT COUNT(*) FROM dbo.readings WHERE value > @P1	-
+1788649652.349416	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	dbo.usp_get_readings	-	F	@p1 nvarchar(max) = PUMP-00%,@p2 floatn(8) = 10,@p3 intn(4) output = 0	-	-
 ```
 
 The first line is a parameterised query: the statement, its parameter
@@ -214,8 +214,8 @@ after the batches that caused them in `tds_sql_batch.log`:
 ```
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	is_error	number	state	class	message	server_name	procedure	line
 #types	time	string	addr	port	addr	port	bool	count	count	count	string	string	string	count
-1788649652.358791	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	T	208	1	16	Invalid object name 'dbo.does_not_exist'.	sqledge01	(empty)	1
-1788649652.359233	CBicJA4g6ewTvtczyk	172.19.0.1	60576	172.19.0.2	1433	T	50000	1	16	custom failure 42	sqledge01	(empty)	1
+1788649652.358791	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	208	1	16	Invalid object name 'dbo.does_not_exist'.	sqledge01	(empty)	1
+1788649652.359233	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	50000	1	16	custom failure 42	sqledge01	(empty)	1
 ```
 
 Error 208 is what reconnaissance trips when it guesses table names; 102 and
