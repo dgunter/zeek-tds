@@ -19,7 +19,7 @@ jobs:
       - name: Install a C++ toolchain for spicyz
         run: |
           apt-get update -q
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -q g++ cmake make git
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q g++ cmake make git libpcap-dev libssl-dev
       - name: Report versions
         run: zeek --version && spicyz --version && zkg --version
       - name: Install the package with zkg

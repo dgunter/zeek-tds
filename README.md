@@ -63,7 +63,8 @@ error_message  Login failed for user 'sa'.
 ## Installation
 
 Requires Zeek 7.0 or newer with Spicy (included in the official builds and
-containers) and a C++ toolchain for `zkg` to compile the analyzer.
+containers) and, for `zkg` to compile the analyzer, a C++ toolchain plus the
+libpcap and OpenSSL headers that Zeek's own headers include.
 
 ```bash
 zkg install zeek-tds
@@ -135,8 +136,9 @@ spicyz -o tds.hlto analyzer/tds.spicy analyzer/zeek_tds.spicy analyzer/tds.evt
 zeek -Cr testing/Traces/sqledge-pytds-workload.pcap tds.hlto scripts
 ```
 
-Both work inside the official `zeek/zeek` container once `g++`, `cmake` and
-`make` are installed; CI does exactly that.
+Both work inside the official `zeek/zeek` container once `g++`, `cmake`,
+`make`, `libpcap-dev` and `libssl-dev` are installed; CI does exactly that on
+Zeek 8.2 and the LTS release.
 
 ## License
 
