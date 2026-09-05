@@ -18,31 +18,31 @@ import spicy;
 # -- Constants -------------------------------------------------------------------------
 
 # Packet header types, [MS-TDS] 2.2.3.1.1.
-const TYPE_SQL_BATCH = 1;
-const TYPE_PRE_TDS7_LOGIN = 2;
-const TYPE_RPC = 3;
-const TYPE_TABULAR_RESULT = 4;
-const TYPE_ATTENTION = 6;
-const TYPE_BULK_LOAD = 7;
-const TYPE_FEDAUTH_TOKEN = 8;
-const TYPE_TRANSACTION_MANAGER = 14;
-const TYPE_LOGIN7 = 16;
-const TYPE_SSPI = 17;
-public const TYPE_PRELOGIN = 18;
+const TYPE_SQL_BATCH: uint8 = 1;
+const TYPE_PRE_TDS7_LOGIN: uint8 = 2;
+const TYPE_RPC: uint8 = 3;
+const TYPE_TABULAR_RESULT: uint8 = 4;
+const TYPE_ATTENTION: uint8 = 6;
+const TYPE_BULK_LOAD: uint8 = 7;
+const TYPE_FEDAUTH_TOKEN: uint8 = 8;
+const TYPE_TRANSACTION_MANAGER: uint8 = 14;
+const TYPE_LOGIN7: uint8 = 16;
+const TYPE_SSPI: uint8 = 17;
+public const TYPE_PRELOGIN: uint8 = 18;
 
-const STATUS_EOM = 0x01;
+const STATUS_EOM: uint8 = 0x01;
 
 # Largest message body we will buffer for parsing (bulk loads can be far larger).
-const MAX_MESSAGE = 16 * 1024 * 1024;
+const MAX_MESSAGE: uint64 = 16 * 1024 * 1024;
 
 # Data type token classes.
-const CLASS_FIXED = 0;
-const CLASS_BYTELEN = 1;
-const CLASS_USHORTLEN = 2;
-const CLASS_LONGLEN = 3;
-const CLASS_PLP = 4;
+const CLASS_FIXED: uint8 = 0;
+const CLASS_BYTELEN: uint8 = 1;
+const CLASS_USHORTLEN: uint8 = 2;
+const CLASS_LONGLEN: uint8 = 3;
+const CLASS_PLP: uint8 = 4;
 
-const PLP_NULL = 0xFFFFFFFFFFFFFFFF;
+const PLP_NULL: uint64 = 0xFFFFFFFFFFFFFFFF;
 
 # Fixed-length types, [MS-TDS] 2.2.5.4.1, with their sizes.
 const FIXED_SIZES: map<uint8, uint64> = map(
@@ -74,8 +74,8 @@ const COLLATED_TYPES: set<uint8> = set<uint8>(0xA7, 0xAF, 0x23, 0x63, 0xEF, 0xE7
 const TEXT_TYPES: set<uint8> = set<uint8>(0x22, 0x23, 0x63);
 const UTF16_TYPES: set<uint8> = set<uint8>(0xE7, 0xEF, 0x63, 0xF1);
 const CHAR_TYPES: set<uint8> = set<uint8>(0xA7, 0xAF, 0x23, 0x2F, 0x27);
-const TYPE_XML = 0xF1;
-const TYPE_UDT = 0xF0;
+const TYPE_XML: uint8 = 0xF1;
+const TYPE_UDT: uint8 = 0xF0;
 
 const TYPE_NAMES: map<uint8, string> = map(
     0x1F: "null", 0x30: "tinyint", 0x32: "bit", 0x34: "smallint", 0x38: "int",
@@ -98,26 +98,26 @@ const PROC_NAMES: map<uint16, string> = map(
 );
 
 # Token stream tokens, [MS-TDS] 2.2.7.
-const TOKEN_RETURNSTATUS = 0x79;
-const TOKEN_COLMETADATA = 0x81;
-const TOKEN_DATACLASSIFICATION = 0xA3;
-const TOKEN_TABNAME = 0xA4;
-const TOKEN_COLINFO = 0xA5;
-const TOKEN_ORDER = 0xA9;
-public const TOKEN_ERROR = 0xAA;
-public const TOKEN_INFO = 0xAB;
-const TOKEN_RETURNVALUE = 0xAC;
-const TOKEN_LOGINACK = 0xAD;
-const TOKEN_FEATUREEXTACK = 0xAE;
-const TOKEN_ROW = 0xD1;
-const TOKEN_NBCROW = 0xD2;
-const TOKEN_ENVCHANGE = 0xE3;
-const TOKEN_SESSIONSTATE = 0xE4;
-const TOKEN_SSPI = 0xED;
-const TOKEN_FEDAUTHINFO = 0xEE;
-const TOKEN_DONE = 0xFD;
-const TOKEN_DONEPROC = 0xFE;
-const TOKEN_DONEINPROC = 0xFF;
+const TOKEN_RETURNSTATUS: uint8 = 0x79;
+const TOKEN_COLMETADATA: uint8 = 0x81;
+const TOKEN_DATACLASSIFICATION: uint8 = 0xA3;
+const TOKEN_TABNAME: uint8 = 0xA4;
+const TOKEN_COLINFO: uint8 = 0xA5;
+const TOKEN_ORDER: uint8 = 0xA9;
+public const TOKEN_ERROR: uint8 = 0xAA;
+public const TOKEN_INFO: uint8 = 0xAB;
+const TOKEN_RETURNVALUE: uint8 = 0xAC;
+const TOKEN_LOGINACK: uint8 = 0xAD;
+const TOKEN_FEATUREEXTACK: uint8 = 0xAE;
+const TOKEN_ROW: uint8 = 0xD1;
+const TOKEN_NBCROW: uint8 = 0xD2;
+const TOKEN_ENVCHANGE: uint8 = 0xE3;
+const TOKEN_SESSIONSTATE: uint8 = 0xE4;
+const TOKEN_SSPI: uint8 = 0xED;
+const TOKEN_FEDAUTHINFO: uint8 = 0xEE;
+const TOKEN_DONE: uint8 = 0xFD;
+const TOKEN_DONEPROC: uint8 = 0xFE;
+const TOKEN_DONEINPROC: uint8 = 0xFF;
 
 # -- Shared connection state -----------------------------------------------------------
 

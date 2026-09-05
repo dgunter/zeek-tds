@@ -1,6 +1,7 @@
 build/
-.tmp/
-.btest.failed.dat
+testing/.tmp/
+testing/.btest.failed.dat
 *.hlto
-*.log
+# Zeek output from ad-hoc runs; the test baselines under testing/Baseline are tracked.
+/*.log
 .idea/
