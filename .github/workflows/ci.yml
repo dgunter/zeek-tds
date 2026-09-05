@@ -26,7 +26,7 @@ jobs:
         run: |
           zkg autoconfig --force
           zkg install --force --skiptests .
-          zeek -N Zeek::TDS
+          zeek -NN | grep -q ANALYZER_TDS
       - name: Run the test suite
         run: |
           cd testing && btest -c btest.cfg -d
