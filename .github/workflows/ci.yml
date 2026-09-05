@@ -27,7 +27,7 @@ jobs:
           # The checkout is owned by a different user than the container's root.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           zkg autoconfig --force
-          zkg install --force --skiptests .
+          zkg install --force --skiptests . || { cat /usr/local/zeek/var/lib/zkg/logs/*-build.log; exit 1; }
           zeek -NN | grep -q ANALYZER_TDS
       - name: Run the test suite
         run: |
