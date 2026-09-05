@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: zkg install and btest on Zeek ${{ matrix.zeek }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        zeek: ["8.2.2", "lts"]
+    container: zeek/zeek:${{ matrix.zeek }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a C++ toolchain for spicyz
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q g++ cmake make git
+      - name: Report versions
+        run: zeek --version && spicyz --version && zkg --version
+      - name: Install the package with zkg
+        run: |
+          zkg autoconfig --force
+          zkg install --force --skiptests .
+          zeek -N Zeek::TDS
+      - name: Run the test suite
+        run: |
+          cd testing && btest -c btest.cfg -d

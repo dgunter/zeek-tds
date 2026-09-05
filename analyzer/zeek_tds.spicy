@@ -1,0 +1,57 @@
+# Zeek-specific glue: protocol confirmation and the hand-off of TLS to Zeek's SSL analyzer.
+
+module Zeek_TDS;
+
+import TDS;
+import spicy;
+import zeek;
+
+# A well-formed PRELOGIN or LOGIN7 is unmistakable.
+on TDS::Prelogin::%done {
+    if ( self.version != "" )
+        zeek::confirm_protocol();
+}
+
+on TDS::Login7::%done {
+    zeek::confirm_protocol();
+}
+
+# Encryption negotiated in PRELOGIN: the TLS handshake arrives inside PRELOGIN packets,
+# and once encryption is on, every later byte is a bare TLS record. Both go to the SSL
+# analyzer, which yields ssl.log and x509.log for the SQL session.
+function forward_tls(ctx: TDS::Context&, data: bytes) {
+    if ( ! ctx.ssl_started ) {
+        zeek::protocol_begin("SSL");
+        ctx.ssl_started = True;
+    }
+    zeek::protocol_data_in(zeek::is_orig(), data);
+}
+
+on TDS::Packet::%done {
+    if ( typ == TDS::TYPE_PRELOGIN && TDS::is_tls_record(self.payload) )
+        forward_tls(ctx, self.payload);
+}
+
+on TDS::Frame::%done {
+    if ( self?.tls ) {
+        forward_tls(ctx, pack(self.typ, spicy::ByteOrder::Big)
+            + pack(self.tls.version, spicy::ByteOrder::Big)
+            + pack(self.tls.length, spicy::ByteOrder::Big)
+            + self.tls.payload);
+    }
+}
+
+# Framing errors before confirmation mean this is not TDS.
+on TDS::Stream::%error {
+    zeek::reject_protocol("error while parsing TDS framing");
+}
+
+# Message bodies are parsed through a sink, so their errors stay contained; surface
+# them as a Zeek event for the tds.log parse_error column.
+on TDS::Message::%error(msg: string) {
+    zeek::weird("tds_message_parse_error", "%s (type %d)" % (msg, typ));
+}
+
+on TDS::RPCBody::%error(msg: string) {
+    zeek::weird("tds_message_parse_error", "%s (rpc body)" % msg);
+}

@@ -1,0 +1,1118 @@
+# Tabular Data Stream (TDS), the wire protocol of Microsoft SQL Server.
+#
+# Reference: [MS-TDS] Tabular Data Stream Protocol, TDS 7.x.
+# https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tds/
+#
+# Layout: a TCP stream in either direction is a sequence of Frames. A Frame is
+# either a TDS packet (8-byte header, big-endian, followed by payload) or a raw
+# TLS record, which appears once the two sides have negotiated encryption during
+# PRELOGIN. TDS packets belonging to one message are reassembled until the
+# end-of-message status bit and then parsed by a type-specific unit through a
+# sink, so that a parse error in one message body does not take down the
+# connection.
+
+module TDS;
+
+import spicy;
+
+# -- Constants -------------------------------------------------------------------------
+
+# Packet header types, [MS-TDS] 2.2.3.1.1.
+const TYPE_SQL_BATCH = 1;
+const TYPE_PRE_TDS7_LOGIN = 2;
+const TYPE_RPC = 3;
+const TYPE_TABULAR_RESULT = 4;
+const TYPE_ATTENTION = 6;
+const TYPE_BULK_LOAD = 7;
+const TYPE_FEDAUTH_TOKEN = 8;
+const TYPE_TRANSACTION_MANAGER = 14;
+const TYPE_LOGIN7 = 16;
+const TYPE_SSPI = 17;
+public const TYPE_PRELOGIN = 18;
+
+const STATUS_EOM = 0x01;
+
+# Largest message body we will buffer for parsing (bulk loads can be far larger).
+const MAX_MESSAGE = 16 * 1024 * 1024;
+
+# Data type token classes.
+const CLASS_FIXED = 0;
+const CLASS_BYTELEN = 1;
+const CLASS_USHORTLEN = 2;
+const CLASS_LONGLEN = 3;
+const CLASS_PLP = 4;
+
+const PLP_NULL = 0xFFFFFFFFFFFFFFFF;
+
+# Fixed-length types, [MS-TDS] 2.2.5.4.1, with their sizes.
+const FIXED_SIZES: map<uint8, uint64> = map(
+    0x1F: 0,  # NULLTYPE
+    0x30: 1,  # INT1
+    0x32: 1,  # BIT
+    0x34: 2,  # INT2
+    0x38: 4,  # INT4
+    0x3A: 4,  # DATETIM4
+    0x3B: 4,  # FLT4
+    0x3C: 8,  # MONEY
+    0x3D: 8,  # DATETIME
+    0x3E: 8,  # FLT8
+    0x7A: 4,  # MONEY4
+    0x7F: 8   # INT8
+);
+
+# Types whose TYPE_INFO carries a one-byte length, [MS-TDS] 2.2.5.4.3.
+const BYTELEN_WITH_LENGTH: set<uint8> = set<uint8>(
+    0x24, 0x26, 0x37, 0x3F, 0x68, 0x6A, 0x6C, 0x6D, 0x6E, 0x6F, 0x2F, 0x27, 0x2D, 0x25
+);
+# Date and time types introduced in TDS 7.3: no length in TYPE_INFO, a scale byte for some.
+const DATE_TYPES: set<uint8> = set<uint8>(0x28, 0x29, 0x2A, 0x2B);
+const SCALED_TYPES: set<uint8> = set<uint8>(0x29, 0x2A, 0x2B);
+const DECIMAL_TYPES: set<uint8> = set<uint8>(0x37, 0x3F, 0x6A, 0x6C);
+const USHORTLEN_TYPES: set<uint8> = set<uint8>(0xA5, 0xA7, 0xAD, 0xAF, 0xE7, 0xEF, 0xF5);
+const LONGLEN_TYPES: set<uint8> = set<uint8>(0x22, 0x23, 0x63, 0x62, 0xF4);
+const COLLATED_TYPES: set<uint8> = set<uint8>(0xA7, 0xAF, 0x23, 0x63, 0xEF, 0xE7);
+const TEXT_TYPES: set<uint8> = set<uint8>(0x22, 0x23, 0x63);
+const UTF16_TYPES: set<uint8> = set<uint8>(0xE7, 0xEF, 0x63, 0xF1);
+const CHAR_TYPES: set<uint8> = set<uint8>(0xA7, 0xAF, 0x23, 0x2F, 0x27);
+const TYPE_XML = 0xF1;
+const TYPE_UDT = 0xF0;
+
+const TYPE_NAMES: map<uint8, string> = map(
+    0x1F: "null", 0x30: "tinyint", 0x32: "bit", 0x34: "smallint", 0x38: "int",
+    0x3A: "smalldatetime", 0x3B: "real", 0x3C: "money", 0x3D: "datetime", 0x3E: "float",
+    0x7A: "smallmoney", 0x7F: "bigint", 0x24: "uniqueidentifier", 0x26: "intn", 0x37: "decimal",
+    0x3F: "numeric", 0x68: "bitn", 0x6A: "decimaln", 0x6C: "numericn", 0x6D: "floatn",
+    0x6E: "moneyn", 0x6F: "datetimen", 0x28: "date", 0x29: "time", 0x2A: "datetime2",
+    0x2B: "datetimeoffset", 0x2F: "char", 0x27: "varchar", 0x2D: "binary", 0x25: "varbinary",
+    0xA5: "varbinary", 0xA7: "varchar", 0xAD: "binary", 0xAF: "char", 0xE7: "nvarchar",
+    0xEF: "nchar", 0xF1: "xml", 0xF0: "udt", 0x23: "text", 0x22: "image", 0x63: "ntext",
+    0x62: "sql_variant", 0xF4: "json", 0xF5: "vector"
+);
+
+# Special stored procedures addressed by number in RPC requests, [MS-TDS] 2.2.6.6.
+const PROC_NAMES: map<uint16, string> = map(
+    1: "sp_cursor", 2: "sp_cursoropen", 3: "sp_cursorprepare", 4: "sp_cursorexecute",
+    5: "sp_cursorprepexec", 6: "sp_cursorunprepare", 7: "sp_cursorfetch", 8: "sp_cursoroption",
+    9: "sp_cursorclose", 10: "sp_executesql", 11: "sp_prepare", 12: "sp_execute",
+    13: "sp_prepexec", 14: "sp_prepexecrpc", 15: "sp_unprepare"
+);
+
+# Token stream tokens, [MS-TDS] 2.2.7.
+const TOKEN_RETURNSTATUS = 0x79;
+const TOKEN_COLMETADATA = 0x81;
+const TOKEN_DATACLASSIFICATION = 0xA3;
+const TOKEN_TABNAME = 0xA4;
+const TOKEN_COLINFO = 0xA5;
+const TOKEN_ORDER = 0xA9;
+public const TOKEN_ERROR = 0xAA;
+public const TOKEN_INFO = 0xAB;
+const TOKEN_RETURNVALUE = 0xAC;
+const TOKEN_LOGINACK = 0xAD;
+const TOKEN_FEATUREEXTACK = 0xAE;
+const TOKEN_ROW = 0xD1;
+const TOKEN_NBCROW = 0xD2;
+const TOKEN_ENVCHANGE = 0xE3;
+const TOKEN_SESSIONSTATE = 0xE4;
+const TOKEN_SSPI = 0xED;
+const TOKEN_FEDAUTHINFO = 0xEE;
+const TOKEN_DONE = 0xFD;
+const TOKEN_DONEPROC = 0xFE;
+const TOKEN_DONEINPROC = 0xFF;
+
+# -- Shared connection state -----------------------------------------------------------
+
+type Context = struct {
+    # A client PRELOGIN was seen and the server's reply (sent as packet type 4) is pending.
+    prelogin_pending: bool;
+    # TDS major version negotiated: 0x71 (7.1), 0x72 (7.2), 0x73 (7.3), 0x74 (7.4), 0x08 (8.0).
+    # Zero until a LOGIN7 or LOGINACK has been seen; 7.2+ layouts are assumed then.
+    tds_major: uint8;
+    # Set once TLS records have been handed to the SSL analyzer.
+    ssl_started: bool;
+    # Protocol has been confirmed to Zeek.
+    confirmed: bool;
+};
+
+public function tds_version_name(v: uint32) : string {
+    if ( v == 0x71000001 || v == 0x71000000 ) return "7.1";
+    if ( v == 0x72090002 ) return "7.2";
+    if ( v == 0x730A0003 ) return "7.3A";
+    if ( v == 0x730B0003 ) return "7.3B";
+    if ( v == 0x74000004 ) return "7.4";
+    if ( v == 0x08000000 ) return "8.0";
+    if ( v == 0x70000000 ) return "7.0";
+    return "0x%08x" % v;
+}
+
+function pre72(ctx: Context&) : bool {
+    return ctx.tds_major != 0 && ctx.tds_major < 0x72;
+}
+
+public function is_tls_record(b: bytes) : bool {
+    if ( |b| < 3 )
+        return False;
+    local t = b.sub(0, 1).to_uint(spicy::ByteOrder::Big);
+    return (t >= 20 && t <= 23) && b.sub(1, 2) == b"\x03";
+}
+
+# -- Framing ---------------------------------------------------------------------------
+
+# Top-level unit for each direction.
+public type Stream = unit {
+    %context = Context;
+
+    var cur_type: uint8 = 0;
+    var buf: bytes = b"";
+    var npackets: uint64 = 0;
+    var msg_len: uint64 = 0;
+    var overflow: bool = False;
+    sink msg;
+
+    frames: Frame(self.context())[] foreach {
+        # TLS records, bare or tunnelled in PRELOGIN packets, are forwarded by the glue
+        # and are not part of any TDS message.
+        if ( $$.is_tds && ! ($$.typ == TYPE_PRELOGIN && is_tls_record($$.tds.payload)) ) {
+            local pkt = $$.tds;
+
+            if ( self.npackets == 0 ) {
+                self.cur_type = $$.typ;
+                self.buf = b"";
+                self.msg_len = 0;
+                self.overflow = False;
+            }
+
+            self.npackets += 1;
+            self.msg_len += |pkt.payload|;
+
+            if ( ! self.overflow ) {
+                if ( |self.buf| + |pkt.payload| <= MAX_MESSAGE )
+                    self.buf += pkt.payload;
+                else
+                    self.overflow = True;
+            }
+
+            if ( (pkt.status & STATUS_EOM) != 0 ) {
+                if ( ! self.overflow ) {
+                    self.msg.connect(new Message(self.cur_type, self.msg_len, self.npackets, self.context()));
+                    self.msg.write(self.buf);
+                    self.msg.close();
+                }
+
+                self.npackets = 0;
+                self.buf = b"";
+            }
+        }
+    }
+};
+
+# One TDS packet or one raw TLS record.
+type Frame = unit(ctx: Context&) {
+    var is_tds: bool = True;
+
+    typ: uint8;
+
+    switch ( self.typ ) {
+        20, 21, 22, 23 -> tls: TLSRecord(self.typ) { self.is_tds = False; }
+        TYPE_SQL_BATCH, TYPE_PRE_TDS7_LOGIN, TYPE_RPC, TYPE_TABULAR_RESULT, TYPE_ATTENTION,
+        TYPE_BULK_LOAD, TYPE_FEDAUTH_TOKEN, TYPE_TRANSACTION_MANAGER, TYPE_LOGIN7, TYPE_SSPI,
+        TYPE_PRELOGIN -> tds: Packet(self.typ, ctx);
+    };
+};
+
+# A TLS record seen on the bare TCP stream after encryption was negotiated.
+type TLSRecord = unit(typ: uint8) {
+    version: uint16;
+    length: uint16;
+    payload: bytes &size=self.length;
+};
+
+# TDS packet header, [MS-TDS] 2.2.3.1, big-endian.
+type Packet = unit(typ: uint8, ctx: Context&) {
+    status: uint8;
+    length: uint16 &requires=($$ >= 8);
+    spid: uint16;
+    packet_id: uint8;
+    window: uint8;
+    payload: bytes &size=self.length - 8;
+};
+
+# -- Messages --------------------------------------------------------------------------
+
+# A reassembled message, parsed according to its packet type.
+type Message = unit(typ: uint8, length: uint64, packets: uint64, ctx: Context&) {
+    switch ( typ ) {
+        TYPE_PRELOGIN -> prelogin: Prelogin { ctx.prelogin_pending = True; }
+        TYPE_LOGIN7 -> login: Login7(ctx);
+        TYPE_SQL_BATCH -> sql_batch: SQLBatch(length, ctx);
+        TYPE_RPC -> rpc: RPCRequest(length, ctx);
+        TYPE_TABULAR_RESULT -> response: Response(ctx);
+        TYPE_TRANSACTION_MANAGER -> transaction: TransactionManagerRequest(length);
+        * -> other: bytes &eod;
+    };
+};
+
+# A server message of type 4: the PRELOGIN reply right after a client PRELOGIN, otherwise a
+# token stream.
+type Response = unit(ctx: Context&) {
+    var is_prelogin: bool = False;
+    on %init { self.is_prelogin = ctx.prelogin_pending; }
+
+    prelogin: Prelogin if ( self.is_prelogin ) { ctx.prelogin_pending = False; }
+    tokens: TokenStream(ctx) if ( ! self.is_prelogin );
+};
+
+# -- PRELOGIN ([MS-TDS] 2.2.6.5) -----------------------------------------------------------
+
+type PreloginOption = unit {
+    token: uint8;
+    offset: uint16 if ( self.token != 0xFF );
+    length: uint16 if ( self.token != 0xFF );
+};
+
+type Prelogin = unit {
+    var version: string = "";
+    var encryption: uint8 = 0xFF;
+    var instance: string = "";
+    var thread_id: uint32 = 0;
+    var mars: bool = False;
+    var fedauth_required: bool = False;
+    var has_nonce: bool = False;
+    var has_trace_id: bool = False;
+
+    options: PreloginOption[] &until-including=($$.token == 0xFF) &requires=(|$$| >= 2 && $$[0].token == 0x00);
+    data: bytes &eod;
+
+    on %done {
+        # Offsets are relative to the start of the message; the option table is
+        # 5 bytes per option plus the terminator.
+        local base: uint64 = (|self.options| - 1) * 5 + 1;
+
+        for ( opt in self.options ) {
+            if ( opt.token == 0xFF )
+                break;
+
+            if ( opt.length == 0 || opt.offset < base )
+                continue;
+
+            local start: uint64 = opt.offset - base;
+            local last: uint64 = start + opt.length;
+            if ( last > |self.data| )
+                continue;
+
+            local v = self.data.sub(start, last);
+
+            if ( opt.token == 0x00 && |v| >= 6 ) {
+                self.version = "%d.%d.%d.%d" % (
+                    v.sub(0, 1).to_uint(spicy::ByteOrder::Big),
+                    v.sub(1, 2).to_uint(spicy::ByteOrder::Big),
+                    v.sub(2, 4).to_uint(spicy::ByteOrder::Big),
+                    v.sub(4, 6).to_uint(spicy::ByteOrder::Big));
+            }
+            else if ( opt.token == 0x01 )
+                self.encryption = cast<uint8>(v.sub(0, 1).to_uint(spicy::ByteOrder::Big));
+            else if ( opt.token == 0x02 )
+                self.instance = v.split1(b"\x00")[0].decode(spicy::Charset::UTF8);
+            else if ( opt.token == 0x03 && |v| >= 4 )
+                self.thread_id = cast<uint32>(v.sub(0, 4).to_uint(spicy::ByteOrder::Little));
+            else if ( opt.token == 0x04 )
+                self.mars = v.sub(0, 1) == b"\x01";
+            else if ( opt.token == 0x05 )
+                self.has_trace_id = True;
+            else if ( opt.token == 0x06 )
+                self.fedauth_required = v.sub(0, 1) == b"\x01";
+            else if ( opt.token == 0x07 )
+                self.has_nonce = True;
+        }
+    }
+};
+
+# -- LOGIN7 ([MS-TDS] 2.2.6.4) ---------------------------------------------------------------
+
+type OffsetLength = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    offset: uint16;
+    length: uint16;
+};
+
+type Login7 = unit(ctx: Context&) {
+    %byte-order = spicy::ByteOrder::Little;
+
+    var hostname: string = "";
+    var username: string = "";
+    var has_password: bool = False;
+    var app_name: string = "";
+    var server_name: string = "";
+    var library: string = "";
+    var language: string = "";
+    var database: string = "";
+    var attach_db: string = "";
+    var has_sspi: bool = False;
+    var change_password: bool = False;
+    var client_mac: string = "";
+
+    length: uint32;
+    tds_version: uint32 {
+        ctx.tds_major = cast<uint8>($$ >> 24);
+    }
+    packet_size: uint32;
+    client_prog_ver: uint32;
+    client_pid: uint32;
+    connection_id: uint32;
+    option_flags1: uint8;
+    option_flags2: uint8;
+    type_flags: uint8;
+    option_flags3: uint8;
+    client_tz: int32;
+    client_lcid: uint32;
+
+    ol_hostname: OffsetLength &requires=($$.offset >= 86);
+    ol_username: OffsetLength;
+    ol_password: OffsetLength;
+    ol_app_name: OffsetLength;
+    ol_server_name: OffsetLength;
+    ol_unused: OffsetLength;
+    ol_library: OffsetLength;
+    ol_language: OffsetLength;
+    ol_database: OffsetLength;
+    client_id: bytes &size=6;
+    ol_sspi: OffsetLength;
+    ol_attach_db: OffsetLength;
+    # TDS 7.2 added the change-password pair and cbSSPILong; the hostname offset
+    # tells us how long the fixed part really is.
+    : bytes &size=(self.ol_hostname.offset - 86);
+    data: bytes &eod;
+
+    on %done {
+        local base: uint64 = self.ol_hostname.offset;
+        self.hostname = login_str(self.data, self.ol_hostname, base);
+        self.username = login_str(self.data, self.ol_username, base);
+        self.has_password = self.ol_password.length > 0;
+        self.app_name = login_str(self.data, self.ol_app_name, base);
+        self.server_name = login_str(self.data, self.ol_server_name, base);
+        self.library = login_str(self.data, self.ol_library, base);
+        self.language = login_str(self.data, self.ol_language, base);
+        self.database = login_str(self.data, self.ol_database, base);
+        self.attach_db = login_str(self.data, self.ol_attach_db, base);
+        self.has_sspi = self.ol_sspi.length > 0;
+        self.change_password = (self.option_flags3 & 0x01) != 0;
+        self.client_mac = spicy::bytes_to_mac(self.client_id);
+    }
+
+};
+
+# A UCS-2 string addressed by a LOGIN7 offset/length pair (length in characters).
+function login_str(data: bytes, ol: OffsetLength, base: uint64) : string {
+    if ( ol.length == 0 || ol.offset < base )
+        return "";
+    local start: uint64 = ol.offset - base;
+    local last: uint64 = start + ol.length * 2;
+    if ( last > |data| )
+        return "";
+    return data.sub(start, last).decode(spicy::Charset::UTF16LE);
+}
+
+# -- ALL_HEADERS ([MS-TDS] 2.2.5.3) --------------------------------------------------------------
+
+# Present on SQL batch, RPC and transaction manager requests from TDS 7.2 on. Since the
+# analyzer may join a connection mid-stream, presence is decided from the data: a total
+# length that fits inside the message is a header block, anything else is payload.
+function has_all_headers(first4: uint32, message_length: uint64) : bool {
+    return first4 >= 4 && first4 <= 1024 && first4 <= message_length;
+}
+
+# Without a LOGIN7 or LOGINACK (analyzer joined mid-stream), the presence of ALL_HEADERS
+# on a request tells TDS 7.2+ from earlier versions, which changes token layouts.
+function infer_version(ctx: Context&, headers_present: bool) {
+    if ( ctx.tds_major == 0 )
+        ctx.tds_major = cast<uint8>(headers_present ? 0x72 : 0x71);
+}
+
+type Header = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    length: uint32 &requires=($$ >= 6);
+    typ: uint16;
+    switch ( self.typ ) {
+        2 -> transaction: TransactionDescriptor;
+        * -> other: bytes &eod;
+    } &size=self.length - 6;
+};
+
+type TransactionDescriptor = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    descriptor: uint64;
+    outstanding_requests: uint32;
+};
+
+type AllHeaders = unit(total: uint32) {
+    headers: Header[] &size=total - 4;
+};
+
+# -- SQL batch ([MS-TDS] 2.2.6.7) -------------------------------------------------------------
+
+type SQLBatch = unit(message_length: uint64, ctx: Context&) {
+    %byte-order = spicy::ByteOrder::Little;
+
+    var transaction_descriptor: uint64 = 0;
+    var query: string = "";
+
+    first4: uint32 { infer_version(ctx, has_all_headers($$, message_length)); }
+    headers: AllHeaders(self.first4) if ( has_all_headers(self.first4, message_length) ) {
+        for ( h in $$.headers )
+            if ( h?.transaction )
+                self.transaction_descriptor = h.transaction.descriptor;
+    }
+    text: bytes &eod;
+
+    on %done {
+        local raw = self.text;
+        if ( ! self?.headers )
+            raw = pack(self.first4, spicy::ByteOrder::Little) + raw;
+        self.query = raw.decode(spicy::Charset::UTF16LE);
+    }
+};
+
+# -- Transaction manager request ([MS-TDS] 2.2.6.9) --------------------------------------------
+
+type TransactionManagerRequest = unit(message_length: uint64) {
+    %byte-order = spicy::ByteOrder::Little;
+    first4: uint32;
+    headers: AllHeaders(self.first4) if ( has_all_headers(self.first4, message_length) );
+    request_type: uint16;
+    : bytes &eod;
+};
+
+# -- Data types ([MS-TDS] 2.2.5) --------------------------------------------------------------
+
+type BVarchar = unit {
+    length: uint8;
+    text: bytes &size=self.length * 2 &convert=$$.decode(spicy::Charset::UTF16LE);
+};
+
+type USVarchar = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    length: uint16;
+    text: bytes &size=self.length * 2 &convert=$$.decode(spicy::Charset::UTF16LE);
+};
+
+type XMLInfo = unit {
+    schema_present: uint8;
+    db_name: BVarchar if ( self.schema_present == 1 );
+    owning_schema: BVarchar if ( self.schema_present == 1 );
+    collection: USVarchar if ( self.schema_present == 1 );
+};
+
+type UDTInfo = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    max_byte_size: uint16;
+    db_name: BVarchar;
+    schema_name: BVarchar;
+    type_name: BVarchar;
+    assembly_name: USVarchar;
+};
+
+# TYPE_INFO, [MS-TDS] 2.2.5.6.
+type TypeInfo = unit {
+    %byte-order = spicy::ByteOrder::Little;
+
+    var cls: uint8 = CLASS_FIXED;
+    var fixed_len: uint64 = 0;
+    var max_len: uint64 = 0;
+
+    typ: uint8 {
+        if ( $$ in FIXED_SIZES ) {
+            self.cls = CLASS_FIXED;
+            self.fixed_len = FIXED_SIZES[$$];
+        }
+        else if ( $$ in BYTELEN_WITH_LENGTH || $$ in DATE_TYPES )
+            self.cls = CLASS_BYTELEN;
+        else if ( $$ in USHORTLEN_TYPES )
+            self.cls = CLASS_USHORTLEN;
+        else if ( $$ in LONGLEN_TYPES )
+            self.cls = CLASS_LONGLEN;
+        else if ( $$ == TYPE_XML || $$ == TYPE_UDT )
+            self.cls = CLASS_PLP;
+        else
+            throw "unknown TDS data type 0x%02x" % $$;
+    }
+
+    len8: uint8 if ( self.typ in BYTELEN_WITH_LENGTH ) { self.max_len = $$; }
+    len16: uint16 if ( self.cls == CLASS_USHORTLEN ) {
+        self.max_len = $$;
+        if ( $$ == 0xFFFF )
+            self.cls = CLASS_PLP;
+    }
+    len32: uint32 if ( self.cls == CLASS_LONGLEN ) { self.max_len = $$; }
+    precision: uint8 if ( self.typ in DECIMAL_TYPES );
+    scale: uint8 if ( self.typ in DECIMAL_TYPES || self.typ in SCALED_TYPES );
+    collation: bytes &size=5 if ( self.typ in COLLATED_TYPES );
+    xml: XMLInfo if ( self.typ == TYPE_XML );
+    udt: UDTInfo if ( self.typ == TYPE_UDT );
+};
+
+function scale_or(ti: TypeInfo, fallback: uint64) : uint64 {
+    return ti?.scale ? cast<uint64>(ti.scale) : fallback;
+}
+
+type PLPChunk = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    length: uint32;
+    data: bytes &size=self.length;
+};
+
+# TYPE_VARBYTE, [MS-TDS] 2.2.5.2.3. ``in_row`` selects the text-pointer form that
+# TEXT/NTEXT/IMAGE columns use inside ROW tokens.
+type TypedValue = unit(ti: TypeInfo, in_row: bool) {
+    %byte-order = spicy::ByteOrder::Little;
+
+    var is_null: bool = False;
+    var raw: bytes = b"";
+
+    switch ( ti.cls ) {
+        CLASS_FIXED -> fixed: bytes &size=ti.fixed_len { self.raw = $$; self.is_null = |$$| == 0; }
+        CLASS_BYTELEN -> b: ByteLenValue { self.raw = $$.data; self.is_null = $$.length == 0; }
+        CLASS_USHORTLEN -> us: UShortLenValue { self.raw = $$.data; self.is_null = $$.length == 0xFFFF; }
+        CLASS_LONGLEN -> l: LongLenValue(ti.typ in TEXT_TYPES && in_row) {
+            self.raw = $$.data;
+            self.is_null = $$.is_null;
+        }
+        CLASS_PLP -> plp: PLPValue { self.raw = $$.data; self.is_null = $$.is_null; }
+    };
+};
+
+type ByteLenValue = unit {
+    length: uint8;
+    data: bytes &size=self.length;
+};
+
+type UShortLenValue = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    length: uint16;
+    data: bytes &size=(self.length == 0xFFFF ? 0 : self.length);
+};
+
+type LongLenValue = unit(text_pointer: bool) {
+    %byte-order = spicy::ByteOrder::Little;
+    var is_null: bool = False;
+    var data: bytes = b"";
+
+    textptr_len: uint8 if ( text_pointer ) {
+        if ( $$ == 0 )
+            self.is_null = True;
+    }
+    textptr: bytes &size=self.textptr_len if ( text_pointer && ! self.is_null );
+    timestamp: bytes &size=8 if ( text_pointer && ! self.is_null );
+    length: uint32 if ( ! self.is_null ) {
+        if ( $$ == 0xFFFFFFFF )
+            self.is_null = True;
+    }
+    payload: bytes &size=self.length if ( ! self.is_null ) { self.data = $$; }
+};
+
+type PLPValue = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    var is_null: bool = False;
+    var data: bytes = b"";
+
+    total: uint64 {
+        if ( $$ == PLP_NULL )
+            self.is_null = True;
+    }
+    chunks: PLPChunk[] &until=($$.length == 0) if ( ! self.is_null ) foreach {
+        if ( |self.data| + |$$.data| <= MAX_MESSAGE )
+            self.data += $$.data;
+    }
+};
+
+# UTF-16LE text up to the first NUL character (SQL Server pads some names with NULs).
+function utf16_until_nul(b: bytes) : string {
+    local n: uint64 = 0;
+    while ( n + 2 <= |b| ) {
+        if ( b.sub(n, n + 2) == b"\x00\x00" )
+            break;
+        n += 2;
+    }
+    return b.sub(0, n).decode(spicy::Charset::UTF16LE);
+}
+
+# -- Value rendering ---------------------------------------------------------------------------
+
+function pad(n: uint64, width: uint64) : string {
+    local s = "%d" % n;
+    while ( |s| < width )
+        s = "0" + s;
+    return s;
+}
+
+function pad_hex(n: uint64, width: uint64) : string {
+    local s = "%X" % n;
+    while ( |s| < width )
+        s = "0" + s;
+    return s;
+}
+
+# Days since 1970-01-01 to "YYYY-MM-DD" (proleptic Gregorian).
+function civil_date(days: int64) : string {
+    local z: int64 = days + 719468;
+    local era: int64 = (z >= 0 ? z : z - 146096) / 146097;
+    local doe: int64 = z - era * 146097;
+    local yoe: int64 = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    local y: int64 = yoe + era * 400;
+    local doy: int64 = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    local mp: int64 = (5 * doy + 2) / 153;
+    local d: int64 = doy - (153 * mp + 2) / 5 + 1;
+    local m: int64 = mp < 10 ? mp + 3 : mp - 9;
+    if ( m <= 2 )
+        y += 1;
+    return "%s-%s-%s" % (pad(cast<uint64>(y), 4), pad(cast<uint64>(m), 2), pad(cast<uint64>(d), 2));
+}
+
+# Seconds within a day plus a fraction expressed in 10^-scale units.
+function clock(seconds: uint64, fraction: uint64, scale: uint64) : string {
+    local s = "%s:%s:%s" % (pad(seconds / 3600, 2), pad((seconds % 3600) / 60, 2), pad(seconds % 60, 2));
+    if ( scale > 0 )
+        s = s + "." + pad(fraction, scale);
+    return s;
+}
+
+function pow10(n: uint64) : uint64 {
+    local r: uint64 = 1;
+    local i: uint64 = n;
+    while ( i > 0 ) {
+        r = r * 10;
+        i = i - 1;
+    }
+    return r;
+}
+
+function render_datetime(b: bytes) : string {
+    # int32 days since 1900-01-01, uint32 300ths of a second since midnight.
+    local days = b.sub(0, 4).to_int(spicy::ByteOrder::Little);
+    local ticks = b.sub(4, 8).to_uint(spicy::ByteOrder::Little);
+    local secs = ticks / 300;
+    local ms = ((ticks % 300) * 1000) / 300;
+    return "%s %s" % (civil_date(days - 25567), clock(secs, ms, 3));
+}
+
+function render_smalldatetime(b: bytes) : string {
+    local days = b.sub(0, 2).to_uint(spicy::ByteOrder::Little);
+    local minutes = b.sub(2, 4).to_uint(spicy::ByteOrder::Little);
+    return "%s %s" % (civil_date(cast<int64>(days) - 25567), clock(minutes * 60, 0, 0));
+}
+
+function render_date(b: bytes) : string {
+    # 3-byte days since 0001-01-01.
+    local days = b.to_uint(spicy::ByteOrder::Little);
+    return civil_date(cast<int64>(days) - 719162);
+}
+
+function render_time(b: bytes, scale: uint64) : string {
+    local units = b.to_uint(spicy::ByteOrder::Little);
+    local per_second = pow10(scale);
+    return clock(units / per_second, units % per_second, scale);
+}
+
+function render_decimal(b: bytes, scale: uint64) : string {
+    if ( |b| < 2 || |b| > 9 )
+        return "0x" + spicy::bytes_to_hexstring(b);
+    local positive = b.sub(0, 1) == b"\x01";
+    local magnitude = b.sub(1, |b|).to_uint(spicy::ByteOrder::Little);
+    local digits = ("%d" % magnitude).encode();
+    if ( scale > 0 ) {
+        while ( |digits| <= scale )
+            digits = b"0" + digits;
+        digits = digits.sub(0, |digits| - scale) + b"." + digits.sub(|digits| - scale, |digits|);
+    }
+    local text = digits.decode();
+    return positive ? text : "-" + text;
+}
+
+function render_money(b: bytes) : string {
+    local v: int64 = 0;
+    if ( |b| == 8 ) {
+        local hi = b.sub(0, 4).to_int(spicy::ByteOrder::Little);
+        local lo = b.sub(4, 8).to_uint(spicy::ByteOrder::Little);
+        v = hi * 4294967296 + cast<int64>(lo);
+    }
+    else
+        v = b.to_int(spicy::ByteOrder::Little);
+    local sign = v < 0 ? "-" : "";
+    local a: uint64 = cast<uint64>(v < 0 ? -v : v);
+    return "%s%d.%s" % (sign, a / 10000, pad(a % 10000, 4));
+}
+
+function render_guid(b: bytes) : string {
+    return "%s-%s-%s-%s-%s" % (
+        pad_hex(b.sub(0, 4).to_uint(spicy::ByteOrder::Little), 8),
+        pad_hex(b.sub(4, 6).to_uint(spicy::ByteOrder::Little), 4),
+        pad_hex(b.sub(6, 8).to_uint(spicy::ByteOrder::Little), 4),
+        spicy::bytes_to_hexstring(b.sub(8, 10)),
+        spicy::bytes_to_hexstring(b.sub(10, 16)));
+}
+
+function render_float(b: bytes) : string {
+    if ( |b| == 4 )
+        return "%s" % unpack<real>(b, spicy::RealType::IEEE754_Single, spicy::ByteOrder::Little)[0];
+    if ( |b| == 8 )
+        return "%s" % unpack<real>(b, spicy::RealType::IEEE754_Double, spicy::ByteOrder::Little)[0];
+    return "0x" + spicy::bytes_to_hexstring(b);
+}
+
+# Human-readable value of a parameter or column, by type.
+function render_value(ti: TypeInfo, v: TypedValue) : string {
+    if ( v.is_null )
+        return "NULL";
+
+    local t = ti.typ;
+    local b = v.raw;
+
+    if ( t in UTF16_TYPES )
+        return b.decode(spicy::Charset::UTF16LE);
+    if ( t in CHAR_TYPES )
+        return b.decode(spicy::Charset::UTF8);
+    if ( t == 0x30 )
+        return "%d" % b.to_uint(spicy::ByteOrder::Little);
+    if ( t == 0x34 || t == 0x38 || t == 0x7F || t == 0x26 )
+        return "%d" % b.to_int(spicy::ByteOrder::Little);
+    if ( t == 0x32 || t == 0x68 )
+        return b == b"\x00" ? "false" : "true";
+    if ( t == 0x3B || t == 0x3E || t == 0x6D )
+        return render_float(b);
+    if ( t in DECIMAL_TYPES )
+        return render_decimal(b, scale_or(ti, 0));
+    if ( t == 0x3C || t == 0x7A || t == 0x6E )
+        return render_money(b);
+    if ( t == 0x3D || (t == 0x6F && |b| == 8) )
+        return render_datetime(b);
+    if ( t == 0x3A || (t == 0x6F && |b| == 4) )
+        return render_smalldatetime(b);
+    if ( t == 0x28 )
+        return render_date(b);
+    if ( t == 0x29 )
+        return render_time(b, scale_or(ti, 7));
+    if ( t == 0x2A && |b| > 3 )
+        return "%s %s" % (render_date(b.sub(|b| - 3, |b|)), render_time(b.sub(0, |b| - 3), scale_or(ti, 7)));
+    if ( t == 0x2B && |b| > 5 ) {
+        local offset = b.sub(|b| - 2, |b|).to_int(spicy::ByteOrder::Little);
+        local sign = offset < 0 ? "-" : "+";
+        local a: uint64 = cast<uint64>(offset < 0 ? -offset : offset);
+        return "%s %s %s%s:%s" % (render_date(b.sub(|b| - 5, |b| - 2)),
+            render_time(b.sub(0, |b| - 5), scale_or(ti, 7)),
+            sign, pad(a / 60, 2), pad(a % 60, 2));
+    }
+    if ( t == 0x24 && |b| == 16 )
+        return render_guid(b);
+    return "0x" + spicy::bytes_to_hexstring(b);
+}
+
+public function type_name(ti: TypeInfo) : string {
+    local name = ti.typ in TYPE_NAMES ? TYPE_NAMES[ti.typ] : "0x%02x" % ti.typ;
+    if ( ti.cls == CLASS_PLP && ti.typ != TYPE_XML && ti.typ != TYPE_UDT )
+        return name + "(max)";
+    if ( ti.typ in DECIMAL_TYPES && ti?.precision && ti?.scale )
+        return "%s(%d,%d)" % (name, ti.precision, ti.scale);
+    if ( ti.cls == CLASS_USHORTLEN && ti.typ in UTF16_TYPES )
+        return "%s(%d)" % (name, ti.max_len / 2);
+    if ( ti.cls == CLASS_USHORTLEN )
+        return "%s(%d)" % (name, ti.max_len);
+    if ( ti.typ == 0x26 || ti.typ == 0x6D || ti.typ == 0x6E || ti.typ == 0x6F )
+        return "%s(%d)" % (name, ti.max_len);
+    return name;
+}
+
+# -- RPC request ([MS-TDS] 2.2.6.6) ------------------------------------------------------------
+
+# The start of one procedure call within the request: name or number and option flags.
+# Parameters follow as RPCItems until the next batch separator or the end of the message,
+# so that Zeek sees batch, parameter, parameter, batch, parameter ... in wire order.
+type RPCBatch = unit {
+    %byte-order = spicy::ByteOrder::Little;
+
+    var procedure: string = "";
+    var proc_id: uint16 = 0;
+
+    name_length: uint16;
+    switch ( self.name_length ) {
+        0xFFFF -> id: uint16 {
+            self.proc_id = $$;
+            self.procedure = $$ in PROC_NAMES ? PROC_NAMES[$$] : "sp_%d" % $$;
+        }
+        * -> name: bytes &size=self.name_length * 2 {
+            self.procedure = $$.decode(spicy::Charset::UTF16LE);
+        }
+    };
+    option_flags: uint16;
+};
+
+# Either a parameter or a separator introducing the next procedure in the batch.
+type RPCItem = unit {
+    marker: uint8;
+    switch ( self.marker ) {
+        0x80, 0xFF, 0xFE -> next_batch: RPCBatch;
+        * -> parameter: RPCParameter(self.marker);
+    };
+};
+
+# ParameterData; the B_VARCHAR name length byte has already been consumed as the item marker.
+type RPCParameter = unit(name_length: uint8) {
+    var rendered: string = "";
+
+    name: bytes &size=name_length * 2 &convert=$$.decode(spicy::Charset::UTF16LE);
+    status: uint8;
+    type_info: TypeInfo;
+    value: TypedValue(self.type_info, False);
+
+    on %done {
+        self.rendered = render_value(self.type_info, self.value);
+    }
+};
+
+type RPCRequest = unit(message_length: uint64, ctx: Context&) {
+    %byte-order = spicy::ByteOrder::Little;
+
+    var transaction_descriptor: uint64 = 0;
+    sink body;
+
+    first4: uint32 { infer_version(ctx, has_all_headers($$, message_length)); }
+    headers: AllHeaders(self.first4) if ( has_all_headers(self.first4, message_length) ) {
+        for ( h in $$.headers )
+            if ( h?.transaction )
+                self.transaction_descriptor = h.transaction.descriptor;
+    }
+    rest: bytes &eod;
+
+    # The batches are parsed through a second sink so that, without headers, the four
+    # bytes already consumed can be put back in front of them.
+    on %done {
+        self.body.connect(new RPCBody(self.transaction_descriptor));
+        if ( ! self?.headers )
+            self.body.write(pack(self.first4, spicy::ByteOrder::Little));
+        self.body.write(self.rest);
+        self.body.close();
+    }
+};
+
+# The procedure calls of an RPC request. Its completion event closes the request.
+type RPCBody = unit(transaction_descriptor: uint64) {
+    batch: RPCBatch;
+    items: RPCItem[] &eod;
+};
+
+# -- Token stream ([MS-TDS] 2.2.7), the server's tabular responses -----------------------------------
+
+type Column = unit(ctx: Context&) {
+    %byte-order = spicy::ByteOrder::Little;
+    user_type16: uint16 if ( pre72(ctx) );
+    user_type32: uint32 if ( ! pre72(ctx) );
+    flags: uint16;
+    type_info: TypeInfo;
+    table_parts: uint8 if ( self.type_info.typ in TEXT_TYPES );
+    table_name: USVarchar[] &count=self.table_parts if ( self.type_info.typ in TEXT_TYPES );
+    name: BVarchar;
+};
+
+type ColMetaData = unit(ctx: Context&) {
+    %byte-order = spicy::ByteOrder::Little;
+    count: uint16;
+    columns: Column(ctx)[] &count=(self.count == 0xFFFF ? 0 : self.count);
+};
+
+type RowState = struct {
+    columns: vector<TypeInfo>;
+    index: uint64;
+    bitmap: bytes;
+};
+
+function column_is_null(st: RowState&, i: uint64) : bool {
+    if ( |st.bitmap| == 0 )
+        return False;
+    local byte = st.bitmap.sub(i / 8, i / 8 + 1).to_uint(spicy::ByteOrder::Big);
+    return (byte & (cast<uint64>(1) << (i % 8))) != 0;
+}
+
+# One column of a ROW or NBCROW; state carries the column types and the null bitmap.
+type Cell = unit(st: RowState&) {
+    var i: uint64 = 0;
+    on %init { self.i = st.index; st.index = st.index + 1; }
+    value: TypedValue(st.columns[self.i], True) if ( ! column_is_null(st, self.i) );
+};
+
+type Row = unit(columns: vector<TypeInfo>) {
+    var st: RowState& = new RowState;
+    on %init { self.st.columns = columns; self.st.index = 0; self.st.bitmap = b""; }
+    cells: Cell(self.st)[] &count=|columns|;
+};
+
+type NBCRow = unit(columns: vector<TypeInfo>) {
+    var st: RowState& = new RowState;
+    on %init { self.st.columns = columns; self.st.index = 0; }
+    bitmap: bytes &size=(|columns| + 7) / 8 { self.st.bitmap = $$; }
+    cells: Cell(self.st)[] &count=|columns|;
+};
+
+type LoginAck = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    length: uint16;
+    interface: uint8;
+    tds_version: uint32 &byte-order=spicy::ByteOrder::Big;
+    # SQL Server pads the product name with NUL characters.
+    prog_name_length: uint8;
+    prog_name: bytes &size=self.prog_name_length * 2 &convert=utf16_until_nul($$);
+    major: uint8;
+    minor: uint8;
+    build_hi: uint8;
+    build_lo: uint8;
+};
+
+type EnvChange = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    var new_value: string = "";
+    var old_value: string = "";
+
+    length: uint16;
+    typ: uint8;
+    body: bytes &size=self.length - 1;
+
+    on %done {
+        # Types 1-6, 13 and 19 carry B_VARCHAR new/old values; the rest are binary.
+        if ( self.typ <= 6 || self.typ == 13 || self.typ == 19 ) {
+            local n = self.body.sub(0, 1).to_uint(spicy::ByteOrder::Big);
+            local end_new: uint64 = 1 + n * 2;
+            if ( end_new <= |self.body| ) {
+                self.new_value = self.body.sub(1, end_new).decode(spicy::Charset::UTF16LE);
+                if ( end_new < |self.body| ) {
+                    local o = self.body.sub(end_new, end_new + 1).to_uint(spicy::ByteOrder::Big);
+                    local end_old: uint64 = end_new + 1 + o * 2;
+                    if ( end_old <= |self.body| )
+                        self.old_value = self.body.sub(end_new + 1, end_old).decode(spicy::Charset::UTF16LE);
+                }
+            }
+        }
+        else if ( self.typ == 20 && |self.body| >= 7 ) {
+            # Routing: USHORT length, protocol byte, port, alternate server.
+            local port_num = self.body.sub(3, 5).to_uint(spicy::ByteOrder::Little);
+            local n = self.body.sub(5, 7).to_uint(spicy::ByteOrder::Little);
+            if ( 7 + n * 2 <= |self.body| )
+                self.new_value = "%s:%d" % (self.body.sub(7, 7 + n * 2).decode(spicy::Charset::UTF16LE), port_num);
+        }
+        else
+            self.new_value = "0x" + spicy::bytes_to_hexstring(self.body);
+    }
+};
+
+# ERROR and INFO tokens share a layout.
+type ErrorInfo = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    length: uint16;
+    body: ErrorInfoBody &size=self.length;
+};
+
+type ErrorInfoBody = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    number: uint32;
+    state: uint8;
+    class: uint8;
+    message: USVarchar;
+    server_name: BVarchar;
+    proc_name: BVarchar;
+    line_raw: bytes &eod;
+};
+
+public function error_line(b: ErrorInfoBody) : uint64 {
+    return |b.line_raw| > 0 ? b.line_raw.to_uint(spicy::ByteOrder::Little) : 0;
+}
+
+type Done = unit(ctx: Context&) {
+    %byte-order = spicy::ByteOrder::Little;
+    status: uint16;
+    cur_cmd: uint16;
+    row_count32: uint32 if ( pre72(ctx) );
+    row_count64: uint64 if ( ! pre72(ctx) );
+};
+
+public function done_rows(d: Done) : uint64 {
+    return d?.row_count32 ? cast<uint64>(d.row_count32) : d.row_count64;
+}
+
+type ReturnValue = unit(ctx: Context&) {
+    %byte-order = spicy::ByteOrder::Little;
+    var rendered: string = "";
+
+    ordinal: uint16;
+    name: BVarchar;
+    status: uint8;
+    user_type16: uint16 if ( pre72(ctx) );
+    user_type32: uint32 if ( ! pre72(ctx) );
+    flags: uint16;
+    type_info: TypeInfo;
+    value: TypedValue(self.type_info, False);
+
+    on %done { self.rendered = render_value(self.type_info, self.value); }
+};
+
+# Tokens with a USHORT length we do not interpret.
+type SkippedToken = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    length: uint16;
+    : bytes &size=self.length;
+};
+
+# Tokens with a DWORD length we do not interpret (FEDAUTHINFO, SESSIONSTATE).
+type SkippedLongToken = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    length: uint32;
+    : bytes &size=self.length;
+};
+
+# FEATUREEXTACK: (FeatureId, DWORD length, data)* terminated by 0xFF.
+type FeatureAck = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    id: uint8;
+    length: uint32 if ( self.id != 0xFF );
+    : bytes &size=self.length if ( self.id != 0xFF );
+};
+
+type FeatureExtAck = unit {
+    features: FeatureAck[] &until-including=($$.id == 0xFF);
+};
+
+type Token = unit(st: RowState&, ctx: Context&) {
+    typ: uint8;
+    switch ( self.typ ) {
+        TOKEN_LOGINACK -> login_ack: LoginAck {
+            ctx.tds_major = cast<uint8>($$.tds_version >> 24);
+        }
+        TOKEN_ENVCHANGE -> env_change: EnvChange;
+        TOKEN_ERROR -> error: ErrorInfo;
+        TOKEN_INFO -> info: ErrorInfo;
+        TOKEN_DONE, TOKEN_DONEPROC, TOKEN_DONEINPROC -> done: Done(ctx);
+        TOKEN_RETURNSTATUS -> return_status: int32 &byte-order=spicy::ByteOrder::Little;
+        TOKEN_RETURNVALUE -> return_value: ReturnValue(ctx);
+        TOKEN_COLMETADATA -> col_meta_data: ColMetaData(ctx) {
+            st.columns = vector<TypeInfo>();
+            for ( c in $$.columns )
+                st.columns.push_back(c.type_info);
+        }
+        TOKEN_ROW -> row: Row(st.columns);
+        TOKEN_NBCROW -> nbc_row: NBCRow(st.columns);
+        TOKEN_ORDER, TOKEN_TABNAME, TOKEN_COLINFO, TOKEN_SSPI -> skipped: SkippedToken;
+        TOKEN_FEDAUTHINFO, TOKEN_SESSIONSTATE -> skipped_long: SkippedLongToken;
+        TOKEN_FEATUREEXTACK -> feature_ext_ack: FeatureExtAck;
+        * -> unknown: bytes &eod;
+    };
+};
+
+type TokenStream = unit(ctx: Context&) {
+    var st: RowState& = new RowState;
+    var rows: uint64 = 0;
+    var row_count: uint64 = 0;
+    var errors: uint64 = 0;
+
+    tokens: Token(self.st, ctx)[] &eod foreach {
+        if ( $$.typ == TOKEN_ROW || $$.typ == TOKEN_NBCROW )
+            self.rows += 1;
+        else if ( $$?.done && ($$.done.status & 0x10) != 0 )
+            self.row_count += done_rows($$.done);
+        else if ( $$.typ == TOKEN_ERROR )
+            self.errors += 1;
+    }
+};

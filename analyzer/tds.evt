@@ -1,0 +1,48 @@
+import TDS;
+import Zeek_TDS;
+
+protocol analyzer TDS over TCP:
+    parse originator with TDS::Stream,
+    parse responder with TDS::Stream;
+
+import spicy;
+
+# Every TDS packet and every reassembled message.
+on TDS::Packet -> event TDS::packet($conn, $is_orig, typ, self.status, self.length, self.spid, self.packet_id);
+on TDS::Message -> event TDS::message($conn, $is_orig, typ, length, packets);
+
+# Raw TLS records on the stream: the session went encrypted.
+on TDS::TLSRecord -> event TDS::tls_record($conn, $is_orig, typ, self.length);
+
+on TDS::Prelogin -> event TDS::prelogin($conn, $is_orig, self.version, self.encryption, self.instance,
+    self.thread_id, self.mars, self.fedauth_required, self.has_nonce, self.has_trace_id);
+
+on TDS::Login7 -> event TDS::login7($conn, TDS::tds_version_name(self.tds_version), self.packet_size,
+    self.client_prog_ver, self.client_pid, self.option_flags1, self.option_flags2, self.type_flags,
+    self.option_flags3, self.hostname, self.username, self.has_password, self.app_name,
+    self.server_name, self.library, self.language, self.database, self.attach_db, self.has_sspi,
+    self.change_password, self.client_mac);
+
+on TDS::SQLBatch -> event TDS::sql_batch($conn, self.transaction_descriptor, self.query);
+
+on TDS::TransactionManagerRequest -> event TDS::transaction_manager_request($conn, self.request_type);
+
+on TDS::RPCBody -> event TDS::rpc_request($conn, transaction_descriptor);
+on TDS::RPCBatch -> event TDS::rpc_batch($conn, self.procedure, self.proc_id, self.option_flags);
+on TDS::RPCParameter -> event TDS::rpc_parameter($conn, self.name, self.status,
+    TDS::type_name(self.type_info), self.rendered);
+
+on TDS::LoginAck -> event TDS::login_ack($conn, self.interface, TDS::tds_version_name(self.tds_version),
+    self.prog_name, "%d.%d.%d" % (self.major, self.minor, cast<uint64>(self.build_hi) * 256 + cast<uint64>(self.build_lo)));
+on TDS::EnvChange -> event TDS::env_change($conn, self.typ, self.new_value, self.old_value);
+on TDS::Token if ( self?.error ) -> event TDS::error_info($conn, True, self.error.body.number,
+    self.error.body.state, self.error.body.class, self.error.body.message.text,
+    self.error.body.server_name.text, self.error.body.proc_name.text, TDS::error_line(self.error.body));
+on TDS::Token if ( self?.info ) -> event TDS::error_info($conn, False, self.info.body.number,
+    self.info.body.state, self.info.body.class, self.info.body.message.text,
+    self.info.body.server_name.text, self.info.body.proc_name.text, TDS::error_line(self.info.body));
+on TDS::Token if ( self?.done ) -> event TDS::done($conn, self.typ, self.done.status, self.done.cur_cmd, TDS::done_rows(self.done));
+on TDS::Token if ( self?.return_status ) -> event TDS::return_status($conn, self.return_status);
+on TDS::ReturnValue -> event TDS::return_value($conn, self.name.text, TDS::type_name(self.type_info), self.rendered);
+on TDS::Column -> event TDS::column($conn, self.name.text, TDS::type_name(self.type_info));
+on TDS::TokenStream -> event TDS::response($conn, self.rows, self.row_count, self.errors);

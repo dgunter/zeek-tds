@@ -1,0 +1,13 @@
+[package]
+script_dir = scripts
+test_command = cd testing && btest -c btest.cfg
+summary = Spicy analyzer for Microsoft SQL Server's Tabular Data Stream (TDS) protocol
+description = Parses TDS 7.x (SQL Server 2000 through 2022, Azure SQL) and logs logins,
+	SQL batches, remote procedure calls with typed parameters, server errors and
+	result summaries. Prepared statements addressed by procedure number
+	(sp_executesql, sp_prepexec, sp_execute ...) are decoded with the SQL text they
+	carry. Sessions that negotiate encryption are handed to Zeek's SSL analyzer.
+tags = zeek plugin, protocol analyzer, log writer, spicy, tds, mssql, sql server, database, ics
+depends =
+	zeek >=7.0.0
+build_command = mkdir -p build && cd build && SPICYZ=$(command -v spicyz || echo %(package_base)s/spicy-plugin/build/bin/spicyz) cmake .. && cmake --build .
