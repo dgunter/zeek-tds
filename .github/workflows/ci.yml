@@ -24,6 +24,8 @@ jobs:
         run: zeek --version && spicyz --version && zkg --version
       - name: Install the package with zkg
         run: |
+          # The checkout is owned by a different user than the container's root.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           zkg autoconfig --force
           zkg install --force --skiptests .
           zeek -NN | grep -q ANALYZER_TDS
