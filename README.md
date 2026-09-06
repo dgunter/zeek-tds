@@ -362,9 +362,9 @@ dedicated admin connection port:
 ```
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	request	instance	instances	dac_port	answered
 #types	time	string	addr	port	addr	port	string	string	vector[string]	count	bool
-1788654391.480131	CHhAvVGS1DHFjwGM9	172.19.0.3	41161	172.19.0.4	1434	enumerate	-	SQLEDGE01\\MSSQLSERVER 15.0.2000.1574 tcp/1433,SQLEDGE01\\HISTORIAN 14.0.3456.2 tcp/1533	-	T
-1788654391.684522	CHhAvVGS1DHFjwGM9	172.19.0.3	41161	172.19.0.4	1434	instance	HISTORIAN	SQLEDGE01\\HISTORIAN 14.0.3456.2 tcp/1533	-	T
-1788654392.089700	CHhAvVGS1DHFjwGM9	172.19.0.3	41161	172.19.0.4	1434	dac	HISTORIAN	-	1534	T
+1788655403.632228	CmdALgBP5EAq6TaX	172.19.0.4	41161	172.19.0.3	1434	enumerate	-	SQLEDGE01\\MSSQLSERVER 15.0.2000.1574 tcp/1433,SQLEDGE01\\HISTORIAN 14.0.3456.2 tcp/1533	-	T
+1788655403.837979	CmdALgBP5EAq6TaX	172.19.0.4	41161	172.19.0.3	1434	instance	HISTORIAN	SQLEDGE01\\HISTORIAN 14.0.3456.2 tcp/1533	-	T
+1788655404.244407	CmdALgBP5EAq6TaX	172.19.0.4	41161	172.19.0.3	1434	dac	HISTORIAN	-	1534	T
 ```
 
 The answer is an inventory of the server: every instance, its exact build and
