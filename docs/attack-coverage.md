@@ -9,7 +9,7 @@ Everything else is a SIEM query away, since every line carries the connection
 
 | Technique | Evidence | Notice |
 | --- | --- | --- |
-| T1046 Network Service Discovery | `tds_login.log` lines with PRELOGIN fields but no LOGIN7 and no login result (probes); `conn.log` for connections that never send PRELOGIN | `TDS::Scan` |
+| T1046 Network Service Discovery | `ssrp.log` enumeration and instance lookups (the Browser service hands back every instance, build and port); `tds_login.log` lines with PRELOGIN fields but no LOGIN7 and no login result (probes); `conn.log` for connections that never send PRELOGIN | `TDS::Scan` |
 | T1110 Brute Force (.001 guessing, .003 spraying) | `tds_error.log` 18456, `tds_login.log` `success F` with `username` and `hostname`; state 1 means the server hid the reason | `TDS::Login_Bruteforce` |
 | T1078 Valid Accounts, T1078.001 Default Accounts | `tds_login.log`: `username`, `hostname`, `app_name`, `library`, `client_mac`; `sa` from a workstation | `TDS::New_Application` |
 | T1552 / T1557 Unsecured Credentials, adversary-in-the-middle | `tds_login.log` `password_in_clear`, `encrypted F`, `client_encryption` / `server_encryption` | `TDS::Cleartext_Password` |
@@ -37,7 +37,7 @@ Historians, MES and alarm databases are almost always SQL Server.
 
 | Technique | Evidence | Notice |
 | --- | --- | --- |
-| T0846 Remote System Discovery, T0888 Remote System Information Discovery | PRELOGIN probes; `server_version`, `server_product_version` in `tds_login.log` tell an attacker (and you) the exact build | `TDS::Scan` |
+| T0846 Remote System Discovery, T0888 Remote System Information Discovery | `ssrp.log` enumeration; PRELOGIN probes; `server_version`, `server_product_version` in `tds_login.log` tell an attacker (and you) the exact build | `TDS::Scan` |
 | T0812 Default Credentials, T0859 Valid Accounts | `tds_login.log` `username sa`, `has_password`, `success` | `TDS::Login_Bruteforce`, `TDS::New_Application` |
 | T0886 Remote Services | every TDS session: who talks to the historian, with which client | |
 | T0811 Data from Information Repositories, T0882 Theft of Operational Information | `tds_result.log`, `tds.log` `rows`; statements against tag and event tables in `tds_sql_batch.log` and `tds_rpc.log` | `TDS::Large_Result` |

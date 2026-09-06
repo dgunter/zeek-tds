@@ -96,7 +96,7 @@ export {
 		packets: count &log;
 		## MARS session id when the connection multiplexes sessions (SMP).
 		session: count &log &optional;
-		## For server responses: rows returned in this message.
+		## For server responses: rows returned in this message; for bulk loads, rows sent.
 		rows: count &log &optional;
 		## For server responses: rows affected as reported by DONE tokens.
 		row_count: count &log &optional;
@@ -385,7 +385,7 @@ event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count, pa
 	if ( c$tds$mars )
 		info$session = sid;
 
-	if ( ! is_orig && msg_type == 4 )
+	if ( (! is_orig && msg_type == 4) || (is_orig && msg_type == 7) )
 		{
 		info$rows = c$tds$rows;
 		info$row_count = c$tds$row_count;

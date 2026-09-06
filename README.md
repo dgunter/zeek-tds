@@ -6,7 +6,8 @@ protocol every client uses to talk to Microsoft SQL Server, written in
 port it recognises TDS on) and writes five logs that between them answer the
 questions a hunter asks of a database: who connected, from what, as whom, what
 they ran, what they called, what broke, and how much came back. A sixth,
-opt-in log describes what came back.
+opt-in log describes what came back, and `ssrp.log` covers the SQL Server
+Browser service on UDP 1434, where clients and scanners discover instances.
 
 ## The problem it solves
 
@@ -96,11 +97,11 @@ server responses (`tabular_result`) additionally say how many rows they
 returned, how many rows the DONE tokens reported affected, and how many
 errors they contained. Later in the same session a `SELECT *` comes back as
 a four-packet message with sixty rows, and in another trace a bulk load goes
-the other way:
+the other way, its rows counted as well:
 
 ```
 1788649652.338220	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	12995	4	60	60	0
-1788649656.417964	ClyAae4GU1BSVUAKl	172.19.0.1	55272	172.19.0.2	1433	T	bulk_load	12110	3	-	-	-
+1788649656.417964	ClyAae4GU1BSVUAKl	172.19.0.1	55272	172.19.0.2	1433	T	bulk_load	12110	3	-	500	0	0
 ```
 
 Volume lives here: a host that normally reads a handful of rows and one night
@@ -179,6 +180,9 @@ return_status  7
 
 Types are named the way SQL Server names them, with the wire's nullable
 variants: `intn(4)` is a nullable `int`, `floatn(8)` a nullable `float`.
+Table-valued parameters show their table type and row count, as in
+`@p1 table(dbo.tag_list) = <3 rows>`, and Always Encrypted parameters show
+the plaintext type they encrypt, as `<encrypted int>`.
 
 Earlier in the same session the client inserted sixty rows, each an
 `sp_executesql` with fifteen typed parameters. One of them, wrapped for
@@ -347,6 +351,26 @@ error_number    18452
 error_message   Login failed. The login is from an untrusted domain and cannot be used with Integrated authentication.
 ```
 
+## Before the connection: ssrp.log
+
+A client that only knows an instance name, and every scanner, first asks the
+SQL Server Browser service on UDP 1434 which instances exist and on which ports.
+The analyzer parses that exchange into `ssrp.log`, one line per request and
+answer: enumeration of all instances, a lookup by name, or a request for the
+dedicated admin connection port:
+
+```
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	request	instance	instances	dac_port	answered
+#types	time	string	addr	port	addr	port	string	string	vector[string]	count	bool
+1788654391.480131	CHhAvVGS1DHFjwGM9	172.19.0.3	41161	172.19.0.4	1434	enumerate	-	SQLEDGE01\\MSSQLSERVER 15.0.2000.1574 tcp/1433,SQLEDGE01\\HISTORIAN 14.0.3456.2 tcp/1533	-	T
+1788654391.684522	CHhAvVGS1DHFjwGM9	172.19.0.3	41161	172.19.0.4	1434	instance	HISTORIAN	SQLEDGE01\\HISTORIAN 14.0.3456.2 tcp/1533	-	T
+1788654392.089700	CHhAvVGS1DHFjwGM9	172.19.0.3	41161	172.19.0.4	1434	dac	HISTORIAN	-	1534	T
+```
+
+The answer is an inventory of the server: every instance, its exact build and
+its TCP port. A source enumerating many servers this way trips the same
+`TDS::Scan` notice as PRELOGIN probing.
+
 ## How the logs connect
 
 - **`uid`** is on every line of every log, and on `conn.log` and `ssl.log`.
@@ -438,6 +462,9 @@ by-reference parameters, `NULL` for nulls, hex for binary), `statement`,
 
 **tds_result.log** (opt-in): `columns`, `types`, `rows`, `sample`.
 
+**ssrp.log**: `request` (`broadcast`, `enumerate`, `instance`, `dac`),
+`instance`, `instances`, `dac_port`, `answered`.
+
 **tds_error.log**: `is_error`, `number`, `state`, `class`, `message`,
 `server_name`, `procedure`, `line`.
 
@@ -463,8 +490,9 @@ or from a checkout:
 zkg install .
 ```
 
-The analyzer registers itself for TCP port 1433 and is also enabled by
-signature when a PRELOGIN or LOGIN7 message is seen on any port.
+The TDS analyzer registers itself for TCP port 1433 and is also enabled by
+signature when a PRELOGIN or LOGIN7 message is seen on any port; the SSRP
+analyzer listens on UDP 1434.
 
 ## Options
 
@@ -517,15 +545,16 @@ obfuscated password, which is only reported as present); SQL batches with
 ALL_HEADERS; RPC requests including numbered procedures, multiple batches, and
 parameters of every fixed-length, byte-length, ushort-length, long-length and
 partially-length-prefixed type, rendered by type (integers, decimals, money,
-floats, strings, binary, GUIDs, all date and time types); transaction manager
-requests; the server token stream: LOGINACK, ENVCHANGE, ERROR, INFO, DONE,
+floats, strings, binary, GUIDs, all date and time types), table-valued
+parameters, and Always Encrypted parameter metadata; transaction manager
+requests; bulk loads (columns and rows counted); the server token stream: LOGINACK, ENVCHANGE, ERROR, INFO, DONE,
 RETURNSTATUS, RETURNVALUE, COLMETADATA including Always Encrypted key tables
 and crypto metadata, ROW and NBCROW (rendered into tds_result.log when
 enabled), FEATUREEXTACK, SSPI, ENVCHANGE routing; LOGIN7 feature extensions
 including the client user agent and federated authentication library. Integrated
 authentication tokens are handed to Zeek's NTLM and GSSAPI analyzers.
 
-Not decoded: the contents of bulk-load rows; TDS 8.0 (TLS from the first byte, which the SSL
+Not decoded: TDS 8.0 (TLS from the first byte, which the SSL
 analyzer sees on its own); pre-TDS7 Sybase-style logins.
 
 TDS 7.1 and 7.2+ differ in a few token layouts. The analyzer learns the

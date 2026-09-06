@@ -1,0 +1,10 @@
+import SSRP;
+import Zeek_SSRP;
+
+protocol analyzer SSRP over UDP:
+    parse originator with SSRP::Request,
+    parse responder with SSRP::Response,
+    port 1434/udp;
+
+on SSRP::Request -> event SSRP::request($conn, self.kind, self.instance);
+on SSRP::Response -> event SSRP::response($conn, self.text, self.dac_port);
