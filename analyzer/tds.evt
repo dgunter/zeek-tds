@@ -9,7 +9,10 @@ import spicy;
 
 # Every TDS packet and every reassembled message.
 on TDS::Packet -> event TDS::packet($conn, $is_orig, typ, self.status, self.length, self.spid, self.packet_id);
-on TDS::Message -> event TDS::message($conn, $is_orig, typ, length, packets);
+on TDS::Message -> event TDS::message($conn, $is_orig, typ, length, packets, sid);
+
+# MARS session multiplexing seen on the connection.
+on TDS::SMPPacket if ( (self.flags & TDS::SMP_FLAG_SYN) != 0 ) -> event TDS::smp_session($conn, $is_orig, self.sid);
 
 # Raw TLS records on the stream: the session went encrypted.
 on TDS::TLSRecord -> event TDS::tls_record($conn, $is_orig, typ, self.length);
