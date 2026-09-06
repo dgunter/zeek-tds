@@ -127,6 +127,10 @@ export {
 		has_password: bool &log &optional;
 		## Integrated (Windows) authentication requested.
 		integrated_auth: bool &log &optional;
+		## Security package of the integrated authentication exchange: ntlm or gssapi
+		## (Kerberos/SPNEGO). The exchange itself is handed to Zeek's NTLM and GSSAPI
+		## analyzers, so ntlm.log and kerberos.log carry the account details.
+		sspi_mechanism: string &log &optional;
 		app_name: string &log &optional;
 		server_name: string &log &optional;
 		## Client interface library (ODBC, OLEDB, .NET SqlClient, jTDS ...).
@@ -351,6 +355,14 @@ event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count, pa
 		Log::write(LOG, info);
 	else if ( message_log_mode == SUMMARY )
 		summarize(c, info);
+	}
+
+event TDS::sspi(c: connection, is_orig: bool, mechanism: string, len: count)
+	{
+	hook set_session(c);
+	c$tds$login$integrated_auth = T;
+	if ( mechanism != "" && ! c$tds$login?$sspi_mechanism )
+		c$tds$login$sspi_mechanism = mechanism;
 	}
 
 event TDS::smp_session(c: connection, is_orig: bool, sid: count)

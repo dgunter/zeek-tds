@@ -9,6 +9,9 @@
 - Per-log switches, and a `TDS::message_log_mode` of PER_MESSAGE, SUMMARY
   (one line per connection per interval) or DISABLED for tds.log.
 - Corpus: Microsoft.Data.SqlClient captures with and without MARS.
+- Integrated authentication: NTLM and GSS-API tokens in LOGIN7, SSPI messages
+  and SSPI response tokens are forwarded to Zeek's NTLM and GSSAPI analyzers;
+  tds_login.log gains `sspi_mechanism`.
 
 ## 0.1.0 - 2026-09-05
 
