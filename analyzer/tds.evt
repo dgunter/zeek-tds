@@ -49,3 +49,8 @@ on TDS::Token if ( self?.return_status ) -> event TDS::return_status($conn, self
 on TDS::ReturnValue -> event TDS::return_value($conn, self.name.text, TDS::type_name(self.type_info), self.rendered);
 on TDS::Column -> event TDS::column($conn, self.name.text, TDS::type_name(self.type_info));
 on TDS::TokenStream -> event TDS::response($conn, self.rows, self.row_count, self.errors);
+
+# Integrated authentication tokens, with the security package they belong to.
+on TDS::Login7 if ( |self.sspi| > 0 ) -> event TDS::sspi($conn, True, TDS::sspi_mechanism(self.sspi), |self.sspi|);
+on TDS::SSPIMessage -> event TDS::sspi($conn, True, TDS::sspi_mechanism(self.data), |self.data|);
+on TDS::SSPIToken -> event TDS::sspi($conn, False, TDS::sspi_mechanism(self.data), |self.data|);

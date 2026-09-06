@@ -292,6 +292,28 @@ That is the honest limit of passive monitoring, and it is why the plaintext
 decoding matters most on the legacy and control-system networks where
 encryption is still the exception.
 
+## When the login is a Windows login
+
+With integrated authentication there is no password in LOGIN7. Instead the
+client sends an NTLM or Kerberos token, the server answers with a challenge in
+an SSPI token, and the client completes the exchange in an SSPI message. The
+analyzer recognises the security package from the token and hands the
+exchange to Zeek's NTLM or GSSAPI analyzer, so `conn.log` shows `tds,ntlm`
+and `ntlm.log` carries the domain, account and workstation for the same
+`uid`. `tds_login.log` records the mechanism and the outcome; here a client
+tried NTLM against a server that does not trust its domain:
+
+```
+hostname        workstation-01
+username        (empty)
+has_password    F
+integrated_auth T
+sspi_mechanism  ntlm
+success         F
+error_number    18452
+error_message   Login failed. The login is from an untrusted domain and cannot be used with Integrated authentication.
+```
+
 ## How the logs connect
 
 - **`uid`** is on every line of every log, and on `conn.log` and `ssl.log`.
@@ -346,7 +368,7 @@ Every log begins with `ts`, `uid`, `id.orig_h`, `id.orig_p`, `id.resp_h`,
 `instance`, `mars`, `hostname`, `username`, `has_password`,
 `integrated_auth`, `app_name`, `server_name` (the name the client connected
 to), `library`, `language`, `database`, `attach_db`, `client_pid`,
-`client_prog_ver`, `client_mac`, `read_only_intent`, `odbc`, `oledb`,
+`client_prog_ver`, `client_mac`, `sspi_mechanism`, `read_only_intent`, `odbc`, `oledb`,
 `change_password`, `server_product`, `server_product_version`,
 `server_tds_version`, `initial_database`, `success`, `error_number`,
 `error_message`.
@@ -437,10 +459,10 @@ floats, strings, binary, GUIDs, all date and time types); transaction manager
 requests; the server token stream: LOGINACK, ENVCHANGE, ERROR, INFO, DONE,
 RETURNSTATUS, RETURNVALUE, COLMETADATA including Always Encrypted key tables
 and crypto metadata, ROW and NBCROW (values are parsed to keep the stream
-aligned, row counts are logged), FEATUREEXTACK.
+aligned, row counts are logged), FEATUREEXTACK, SSPI. Integrated
+authentication tokens are handed to Zeek's NTLM and GSSAPI analyzers.
 
-Not decoded: the contents of bulk-load rows and SSPI blobs (logged as messages
-only); result row values; TDS 8.0 (TLS from the first byte, which the SSL
+Not decoded: the contents of bulk-load rows; result row values; TDS 8.0 (TLS from the first byte, which the SSL
 analyzer sees on its own); pre-TDS7 Sybase-style logins.
 
 TDS 7.1 and 7.2+ differ in a few token layouts. The analyzer learns the

@@ -173,6 +173,16 @@ public function is_tls_record(b: bytes) : bool {
     return (t >= 20 && t <= 23) && b.sub(1, 2) == b"\x03";
 }
 
+# Security package of an SSPI token from its leading bytes: raw NTLMSSP, or a GSS-API /
+# SPNEGO wrapper (Kerberos). Empty when unknown.
+public function sspi_mechanism(b: bytes) : string {
+    if ( |b| >= 8 && b.sub(0, 8) == b"NTLMSSP\x00" )
+        return "ntlm";
+    if ( |b| >= 1 && (b.sub(0, 1) == b"\x60" || b.sub(0, 1) == b"\xa1") )
+        return "gssapi";
+    return "";
+}
+
 # -- Framing ---------------------------------------------------------------------------
 
 # Top-level unit for each direction.
@@ -294,6 +304,7 @@ type Message = unit(typ: uint8, length: uint64, packets: uint64, sid: uint16, ct
         TYPE_RPC -> rpc: RPCRequest(length, ctx);
         TYPE_TABULAR_RESULT -> response: Response(ctx);
         TYPE_TRANSACTION_MANAGER -> transaction: TransactionManagerRequest(length);
+        TYPE_SSPI -> sspi: SSPIMessage;
         * -> other: bytes &eod;
     };
 };
@@ -306,6 +317,11 @@ type Response = unit(ctx: Context&) {
 
     prelogin: Prelogin if ( self.is_prelogin ) { ctx.prelogin_pending = False; }
     tokens: TokenStream(ctx) if ( ! self.is_prelogin );
+};
+
+# SSPI message ([MS-TDS] 2.2.6.8): the client's next authentication token.
+type SSPIMessage = unit {
+    data: bytes &eod;
 };
 
 # -- PRELOGIN ([MS-TDS] 2.2.6.5) -----------------------------------------------------------
@@ -396,6 +412,7 @@ type Login7 = unit(ctx: Context&) {
     var has_sspi: bool = False;
     var change_password: bool = False;
     var client_mac: string = "";
+    var sspi: bytes = b"";
 
     length: uint32;
     tds_version: uint32 {
@@ -441,6 +458,12 @@ type Login7 = unit(ctx: Context&) {
         self.database = login_str(self.data, self.ol_database, base);
         self.attach_db = login_str(self.data, self.ol_attach_db, base);
         self.has_sspi = self.ol_sspi.length > 0;
+        if ( self.has_sspi && self.ol_sspi.length != 0xFFFF && self.ol_sspi.offset >= base ) {
+            local sspi_start: uint64 = self.ol_sspi.offset - base;
+            local sspi_end: uint64 = sspi_start + self.ol_sspi.length;
+            if ( sspi_end <= |self.data| )
+                self.sspi = self.data.sub(sspi_start, sspi_end);
+        }
         self.change_password = (self.option_flags3 & 0x01) != 0;
         self.client_mac = spicy::bytes_to_mac(self.client_id);
     }
@@ -1099,6 +1122,13 @@ type ReturnValue = unit(ctx: Context&) {
     on %done { self.rendered = render_value(self.type_info, self.value); }
 };
 
+# SSPI token ([MS-TDS] 2.2.7.22): the server's authentication challenge or final token.
+type SSPIToken = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    length: uint16;
+    data: bytes &size=self.length;
+};
+
 # Tokens with a USHORT length we do not interpret.
 type SkippedToken = unit {
     %byte-order = spicy::ByteOrder::Little;
@@ -1184,7 +1214,8 @@ type Token = unit(st: RowState&, ctx: Context&) {
         }
         TOKEN_ROW -> row: Row(st.columns);
         TOKEN_NBCROW -> nbc_row: NBCRow(st.columns);
-        TOKEN_ORDER, TOKEN_TABNAME, TOKEN_COLINFO, TOKEN_SSPI -> skipped: SkippedToken;
+        TOKEN_SSPI -> sspi: SSPIToken;
+        TOKEN_ORDER, TOKEN_TABNAME, TOKEN_COLINFO -> skipped: SkippedToken;
         TOKEN_FEDAUTHINFO, TOKEN_SESSIONSTATE -> skipped_long: SkippedLongToken;
         TOKEN_FEATUREEXTACK -> feature_ext_ack: FeatureExtAck(ctx);
         * -> unknown: bytes &eod;

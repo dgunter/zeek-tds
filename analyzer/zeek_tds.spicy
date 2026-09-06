@@ -55,3 +55,27 @@ on TDS::Message::%error(msg: string) {
 on TDS::RPCBody::%error(msg: string) {
     zeek::weird("tds_message_parse_error", "%s (rpc body)" % msg);
 }
+
+# Integrated authentication: the SSPI tokens in LOGIN7, SSPI messages and SSPI response
+# tokens are NTLM or GSS-API/Kerberos exchanges, which Zeek's own analyzers understand.
+# Feeding them there yields ntlm.log with the domain, account and workstation.
+function forward_sspi(data: bytes) {
+    local mech = TDS::sspi_mechanism(data);
+    if ( mech == "ntlm" )
+        zeek::protocol_data_in(zeek::is_orig(), data, zeek::protocol_handle_get_or_create("NTLM"));
+    else if ( mech == "gssapi" )
+        zeek::protocol_data_in(zeek::is_orig(), data, zeek::protocol_handle_get_or_create("GSSAPI"));
+}
+
+on TDS::Login7::%done {
+    if ( |self.sspi| > 0 )
+        forward_sspi(self.sspi);
+}
+
+on TDS::SSPIMessage::%done {
+    forward_sspi(self.data);
+}
+
+on TDS::SSPIToken::%done {
+    forward_sspi(self.data);
+}
