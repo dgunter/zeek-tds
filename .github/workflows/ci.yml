@@ -66,6 +66,9 @@ jobs:
     name: SonarCloud
     needs: quality
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
