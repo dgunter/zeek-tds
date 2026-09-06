@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-09-06
 
 - MARS: TDS packets wrapped in SMP session multiplexing are unwrapped and
   messages are reassembled per session; tds.log gains a `session` column.
