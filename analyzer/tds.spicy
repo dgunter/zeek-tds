@@ -46,6 +46,8 @@ const CLASS_BYTELEN: uint8 = 1;
 const CLASS_USHORTLEN: uint8 = 2;
 const CLASS_LONGLEN: uint8 = 3;
 const CLASS_PLP: uint8 = 4;
+const CLASS_TVP: uint8 = 5;
+const TYPE_TVP: uint8 = 0xF3;
 
 const PLP_NULL: uint64 = 0xFFFFFFFFFFFFFFFF;
 
@@ -305,6 +307,7 @@ type Message = unit(typ: uint8, length: uint64, packets: uint64, sid: uint16, ct
         TYPE_TABULAR_RESULT -> response: Response(ctx);
         TYPE_TRANSACTION_MANAGER -> transaction: TransactionManagerRequest(length);
         TYPE_SSPI -> sspi: SSPIMessage;
+        TYPE_BULK_LOAD -> bulk: TokenStream(ctx);
         * -> other: bytes &eod;
     };
 };
@@ -655,6 +658,8 @@ type TypeInfo = unit {
             self.cls = CLASS_LONGLEN;
         else if ( $$ == TYPE_XML || $$ == TYPE_UDT )
             self.cls = CLASS_PLP;
+        else if ( $$ == TYPE_TVP )
+            self.cls = CLASS_TVP;
         else
             throw "unknown TDS data type 0x%02x" % $$;
     }
@@ -671,6 +676,54 @@ type TypeInfo = unit {
     collation: bytes &size=5 if ( self.typ in COLLATED_TYPES );
     xml: XMLInfo if ( self.typ == TYPE_XML );
     udt: UDTInfo if ( self.typ == TYPE_UDT );
+    tvp: TVPTypeInfo if ( self.typ == TYPE_TVP );
+};
+
+# TVP_TYPE_INFO: the table type's name, its columns, optional ordering tokens, TVP_END.
+type TVPTypeInfo = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    var columns: vector<TypeInfo>;
+
+    db_name: BVarchar;
+    owning_schema: BVarchar;
+    type_name: BVarchar;
+    count: uint16;
+    cols: TVPColumn[] &count=(self.count == 0xFFFF ? 0 : self.count) foreach {
+        self.columns.push_back($$.type_info);
+    }
+    options: TVPOptionalToken[] &until-including=($$.token == 0x00);
+};
+
+type TVPColumn = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    user_type: uint32;
+    flags: uint16;
+    type_info: TypeInfo;
+    name: BVarchar;
+};
+
+# TVP_ORDER_UNIQUE (0x10) and TVP_COLUMN_ORDERING (0x11), or TVP_END (0x00).
+type TVPOptionalToken = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    token: uint8;
+    count: uint16 if ( self.token == 0x10 || self.token == 0x11 );
+    : bytes &size=(self.token == 0x10 ? self.count * 3 : self.count * 2) if ( self.token == 0x10 || self.token == 0x11 );
+};
+
+# TVP rows: TVP_ROW_TOKEN (0x01) then one TYPE_VARBYTE per column, ended by TVP_END (0x00).
+type TVPValue = unit(ti: TypeInfo) {
+    var rows: uint64 = 0;
+    items: TVPRow(ti)[] &until-including=($$.token == 0x00) foreach {
+        if ( $$.token == 0x01 )
+            self.rows += 1;
+    }
+};
+
+type TVPRow = unit(ti: TypeInfo) {
+    var st: RowState& = new RowState;
+    on %init { self.st.columns = ti.tvp.columns; self.st.index = 0; self.st.bitmap = b""; }
+    token: uint8;
+    cells: Cell(self.st)[] &count=|ti.tvp.columns| if ( self.token == 0x01 );
 };
 
 function scale_or(ti: TypeInfo, fallback: uint64) : uint64 {
@@ -690,8 +743,10 @@ type TypedValue = unit(ti: TypeInfo, in_row: bool) {
 
     var is_null: bool = False;
     var raw: bytes = b"";
+    var tvp_rows: uint64 = 0;
 
     switch ( ti.cls ) {
+        CLASS_TVP -> tvp: TVPValue(ti) { self.tvp_rows = $$.rows; }
         CLASS_FIXED -> fixed: bytes &size=ti.fixed_len { self.raw = $$; self.is_null = |$$| == 0; }
         CLASS_BYTELEN -> b: ByteLenValue { self.raw = $$.data; self.is_null = $$.length == 0; }
         CLASS_USHORTLEN -> us: UShortLenValue { self.raw = $$.data; self.is_null = $$.length == 0xFFFF; }
@@ -883,6 +938,8 @@ function render_float(b: bytes) : string {
 
 # Human-readable value of a parameter or column, by type.
 function render_value(ti: TypeInfo, v: TypedValue) : string {
+    if ( ti.cls == CLASS_TVP )
+        return "<%d rows>" % v.tvp_rows;
     if ( v.is_null )
         return "NULL";
 
@@ -929,6 +986,10 @@ function render_value(ti: TypeInfo, v: TypedValue) : string {
 }
 
 public function type_name(ti: TypeInfo) : string {
+    if ( ti.cls == CLASS_TVP ) {
+        local schema = ti.tvp.owning_schema.text;
+        return "table(%s%s)" % (|schema| > 0 ? schema + "." : "", ti.tvp.type_name.text);
+    }
     local name = ti.typ in TYPE_NAMES ? TYPE_NAMES[ti.typ] : "0x%02x" % ti.typ;
     if ( ti.cls == CLASS_PLP && ti.typ != TYPE_XML && ti.typ != TYPE_UDT )
         return name + "(max)";
@@ -984,10 +1045,26 @@ type RPCParameter = unit(name_length: uint8) {
     status: uint8;
     type_info: TypeInfo;
     value: TypedValue(self.type_info, False);
+    # fEncrypted (0x08): the ciphertext above is followed by the plaintext type and key info.
+    cipher: ParamCipherInfo if ( (self.status & 0x08) != 0 );
 
     on %done {
-        self.rendered = render_value(self.type_info, self.value);
+        self.rendered = self?.cipher ? "<encrypted %s>" % type_name(self.cipher.type_info)
+                                     : render_value(self.type_info, self.value);
     }
+};
+
+type ParamCipherInfo = unit {
+    %byte-order = spicy::ByteOrder::Little;
+    type_info: TypeInfo;
+    encryption_algo: uint8;
+    algo_name: BVarchar if ( self.encryption_algo == 0 );
+    encryption_type: uint8;
+    database_id: uint32;
+    cek_id: uint32;
+    cek_version: uint32;
+    cek_md_version: uint64;
+    norm_version: uint8;
 };
 
 type RPCRequest = unit(message_length: uint64, ctx: Context&) {

@@ -1,0 +1,54 @@
+# SQL Server Resolution Protocol ([MC-SQLR]): the SQL Server Browser service on UDP 1434.
+# Clients enumerate instances or ask for one instance's port; scanners do the same.
+
+module SSRP;
+
+import spicy;
+
+const CLNT_BCAST_EX: uint8 = 0x02;
+const CLNT_UCAST_EX: uint8 = 0x03;
+const CLNT_UCAST_INST: uint8 = 0x04;
+const CLNT_UCAST_DAC: uint8 = 0x0F;
+const SVR_RESP: uint8 = 0x05;
+
+public type Request = unit {
+    var kind: string = "";
+    var instance: string = "";
+
+    typ: uint8 {
+        if ( $$ == CLNT_BCAST_EX ) self.kind = "broadcast";
+        else if ( $$ == CLNT_UCAST_EX ) self.kind = "enumerate";
+        else if ( $$ == CLNT_UCAST_INST ) self.kind = "instance";
+        else if ( $$ == CLNT_UCAST_DAC ) self.kind = "dac";
+        else self.kind = "0x%02x" % $$;
+    }
+    switch ( self.typ ) {
+        CLNT_UCAST_INST -> name: bytes &until=b"\x00" { self.instance = $$.decode(spicy::Charset::UTF8); }
+        CLNT_UCAST_DAC -> dac: DACRequest { self.instance = $$.instance.decode(spicy::Charset::UTF8); }
+        * -> : bytes &eod;
+    };
+};
+
+type DACRequest = unit {
+    version: uint8;
+    instance: bytes &until=b"\x00";
+};
+
+public type Response = unit {
+    var dac_port: uint16 = 0;
+    var text: string = "";
+
+    typ: uint8 &requires=($$ == SVR_RESP);
+    length: uint16 &byte-order=spicy::ByteOrder::Little;
+    switch ( self.length ) {
+        # The DAC answer is fixed: RESP_SIZE 0x0006, PROTOCOL_VERSION 0x01, TCP_PORT.
+        6 -> dac: DACResponse { self.dac_port = $$.port_num; }
+        # Otherwise a ";"-delimited key/value string describing each instance, ";;"-terminated.
+        * -> data: bytes &size=self.length { self.text = $$.decode(spicy::Charset::UTF8); }
+    };
+};
+
+type DACResponse = unit {
+    version: uint8;
+    port_num: uint16 &byte-order=spicy::ByteOrder::Little;
+};

@@ -20,6 +20,12 @@
   procedures, PRELOGIN scanning, large results, bulk loads, cleartext
   passwords and first-seen applications; docs/attack-coverage.md maps logs and
   notices to ATT&CK and ICS ATT&CK techniques.
+- Table-valued parameters (type name and row count, rows parsed with the
+  table type's columns) and Always Encrypted parameter cipher metadata in RPCs.
+- Bulk loads are parsed as token streams; tds.log counts their rows.
+- SSRP (SQL Server Browser, UDP 1434) analyzer and ssrp.log: enumeration,
+  instance lookups and DAC port requests with the server's inventory answer;
+  enumeration counts toward TDS::Scan.
 - New opt-in tds_result.log: columns, types and row count per result set, with
   optional rendered sample rows (`TDS::log_results`, `TDS::result_sample_rows`).
 

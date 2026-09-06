@@ -1,0 +1,21 @@
+module Zeek_SSRP;
+
+import SSRP;
+import zeek;
+
+on SSRP::Request::%done {
+    if ( self.kind != "" && self.typ <= 0x0F )
+        zeek::confirm_protocol();
+}
+
+on SSRP::Response::%done {
+    zeek::confirm_protocol();
+}
+
+on SSRP::Request::%error {
+    zeek::reject_protocol("error while parsing SSRP request");
+}
+
+on SSRP::Response::%error {
+    zeek::reject_protocol("error while parsing SSRP response");
+}

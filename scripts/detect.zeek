@@ -139,6 +139,13 @@ hook TDS::finalize_tds(c: connection) &priority=10
 		SumStats::observe("tds.scan", [$host=c$id$orig_h], [$str=cat(c$id$resp_h)]);
 	}
 
+# SQL Browser enumeration from one source across servers is the same reconnaissance.
+event SSRP::request(c: connection, kind: string, instance: string) &priority=-3
+	{
+	if ( kind == "enumerate" || kind == "broadcast" )
+		SumStats::observe("tds.scan", [$host=c$id$orig_h], [$str=cat(c$id$resp_h)]);
+	}
+
 # -- Dangerous statements ----------------------------------------------------------------
 
 function check_text(c: connection, kind: string, text: string)
