@@ -16,6 +16,10 @@
   `user_agent`, `fedauth_library`) and ENVCHANGE routing (`routed_to`).
 - tds_rpc.log lines are written when the response arrives and carry the
   output parameter values (`output`) and `return_status`.
+- detect.zeek: notices for login brute force, dangerous statements and
+  procedures, PRELOGIN scanning, large results, bulk loads, cleartext
+  passwords and first-seen applications; docs/attack-coverage.md maps logs and
+  notices to ATT&CK and ICS ATT&CK techniques.
 - New opt-in tds_result.log: columns, types and row count per result set, with
   optional rendered sample rows (`TDS::log_results`, `TDS::result_sample_rows`).
 
