@@ -1,0 +1,87 @@
+# Test harness: public entry points around the analyzer's units so spicy-driver can
+# feed them crafted bytes one unit at a time (see testing/tests/spicy-units.spicy),
+# plus hooks that print what the inner units decoded.
+
+module TDSTest;
+
+import TDS;
+import spicy;
+
+public type Prelogin = unit {
+    p: TDS::Prelogin;
+    on %done {
+        print "prelogin", self.p.version, self.p.encryption, self.p.instance, self.p.thread_id, self.p.mars;
+    }
+};
+
+public type Login7 = unit {
+    var ctx: TDS::Context& = new TDS::Context;
+    l: TDS::Login7(self.ctx);
+    on %done {
+        print "login7", TDS::tds_version_name(self.l.tds_version), self.l.hostname, self.l.username, self.l.has_password, self.l.app_name, self.l.library, self.l.database, self.l.client_mac, self.l.features;
+    }
+};
+
+public type Tokens = unit {
+    var ctx: TDS::Context& = new TDS::Context;
+    t: TDS::TokenStream(self.ctx);
+    on %done {
+        print "tokens", |self.t.tokens|, "rows", self.t.rows, "errors", self.t.errors;
+    }
+};
+
+on TDS::ErrorInfo::%done {
+    print "  error", self.body.number, self.body.class, self.body.message.text;
+}
+
+on TDS::Done::%done {
+    print "  done", self.status, TDS::done_rows(self);
+}
+
+on TDS::LoginAck::%done {
+    print "  loginack", self.prog_name, TDS::tds_version_name(self.tds_version);
+}
+
+on TDS::EnvChange::%done {
+    print "  envchange", self.typ, self.new_value;
+}
+
+public type RPC = unit {
+    var ctx: TDS::Context& = new TDS::Context;
+    r: TDS::RPCRequest(65535, self.ctx);
+};
+
+on TDS::RPCBatch::%done {
+    print "rpc", self.procedure, self.proc_id, self.option_flags;
+}
+
+on TDS::RPCParameter::%done {
+    print "  param", self.name, self.status, TDS::type_name(self.type_info), self.rendered;
+}
+
+# One TYPE_INFO followed by one TYPE_VARBYTE, rendered.
+public type Value = unit {
+    ti: TDS::TypeInfo;
+    v: TDS::TypedValue(self.ti, False);
+    on %done {
+        print TDS::type_name(self.ti), "=", TDS::render_value(self.ti, self.v);
+    }
+};
+
+public type Frames = unit {
+    var ctx: TDS::Context& = new TDS::Context;
+    f: TDS::Frame(self.ctx)[];
+};
+
+on TDS::SMPPacket::%done {
+    print "smp flags", self.flags, "sid", self.sid, "len", self.length, "packets", |self.packets|;
+}
+
+on TDS::Packet::%done {
+    print "  tds packet type", typ, "status", self.status, "len", self.length;
+}
+
+# Batch mode (spicy-batch.spicy): messages as the Stream reassembles them.
+on TDS::Message::%done {
+    print "message type", typ, "len", length, "packets", packets, "sid", sid;
+}

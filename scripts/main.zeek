@@ -12,10 +12,17 @@
 module TDS;
 
 export {
-	redef enum Log::ID += { LOG, LOGIN_LOG, SQL_BATCH_LOG, RPC_LOG, ERROR_LOG, RESULT_LOG };
+	redef enum Log::ID += {
+		LOG,
+		LOGIN_LOG,
+		SQL_BATCH_LOG,
+		RPC_LOG,
+		ERROR_LOG,
+		RESULT_LOG
+	};
 
 	## Ports TDS is registered on, in addition to detection by signature.
-	const ports = { 1433/tcp } &redef;
+	const ports = {1433/tcp} &redef;
 
 	## Also log INFO tokens (severity below 11) to tds_error.log.
 	const log_info_messages = F &redef;
@@ -39,7 +46,11 @@ export {
 	## How tds.log records messages. PER_MESSAGE writes one line per TDS message;
 	## SUMMARY writes one line per connection per :zeek:see:`TDS::summary_interval`
 	## with totals; DISABLED writes nothing.
-	type MessageLogMode: enum { PER_MESSAGE, SUMMARY, DISABLED };
+	type MessageLogMode: enum {
+		PER_MESSAGE,
+		SUMMARY,
+		DISABLED
+	};
 	const message_log_mode = PER_MESSAGE &redef;
 	const summary_interval = 1min &redef;
 
@@ -51,35 +62,83 @@ export {
 
 	## Names of the packet types, [MS-TDS] 2.2.3.1.1.
 	const packet_types: table[count] of string = {
-		[1] = "sql_batch", [2] = "pre_tds7_login", [3] = "rpc", [4] = "tabular_result",
-		[6] = "attention", [7] = "bulk_load", [8] = "fedauth_token",
-		[14] = "transaction_manager", [16] = "login7", [17] = "sspi", [18] = "prelogin",
-	} &default = function(t: count): string { return fmt("type_%d", t); };
+		[1] = "sql_batch",
+		[2] = "pre_tds7_login",
+		[3] = "rpc",
+		[4] = "tabular_result",
+		[6] = "attention",
+		[7] = "bulk_load",
+		[8] = "fedauth_token",
+		[14] = "transaction_manager",
+		[16] = "login7",
+		[17] = "sspi",
+		[18] = "prelogin",
+	} &default=function(t: count): string
+		{
+		return fmt("type_%d", t);
+		};
 
 	const encryption_names: table[count] of string = {
-		[0] = "off", [1] = "on", [2] = "not_supported", [3] = "required",
-		[0x80] = "off_client_cert", [0x81] = "on_client_cert", [0x83] = "required_client_cert",
-	} &default = function(e: count): string { return fmt("0x%02x", e); };
+		[0] = "off",
+		[1] = "on",
+		[2] = "not_supported",
+		[3] = "required",
+		[0x80] = "off_client_cert",
+		[0x81] = "on_client_cert",
+		[0x83] = "required_client_cert",
+	} &default=function(e: count): string
+		{
+		return fmt("0x%02x", e);
+		};
 
 	const env_change_types: table[count] of string = {
-		[1] = "database", [2] = "language", [3] = "charset", [4] = "packet_size",
-		[5] = "unicode_sort_locale", [6] = "unicode_comparison_flags", [7] = "sql_collation",
-		[8] = "begin_transaction", [9] = "commit_transaction", [10] = "rollback_transaction",
-		[11] = "enlist_dtc_transaction", [12] = "defect_transaction", [13] = "mirroring_partner",
-		[15] = "promote_transaction", [16] = "transaction_manager_address", [17] = "transaction_ended",
-		[18] = "reset_connection", [19] = "user_instance", [20] = "routing",
-	} &default = function(t: count): string { return fmt("type_%d", t); };
+		[1] = "database",
+		[2] = "language",
+		[3] = "charset",
+		[4] = "packet_size",
+		[5] = "unicode_sort_locale",
+		[6] = "unicode_comparison_flags",
+		[7] = "sql_collation",
+		[8] = "begin_transaction",
+		[9] = "commit_transaction",
+		[10] = "rollback_transaction",
+		[11] = "enlist_dtc_transaction",
+		[12] = "defect_transaction",
+		[13] = "mirroring_partner",
+		[15] = "promote_transaction",
+		[16] = "transaction_manager_address",
+		[17] = "transaction_ended",
+		[18] = "reset_connection",
+		[19] = "user_instance",
+		[20] = "routing",
+	} &default=function(t: count): string
+		{
+		return fmt("type_%d", t);
+		};
 
 	const transaction_request_types: table[count] of string = {
-		[0] = "get_dtc_address", [1] = "propagate_transaction", [5] = "begin", [6] = "promote",
-		[7] = "commit", [8] = "rollback", [9] = "save",
-	} &default = function(t: count): string { return fmt("type_%d", t); };
+		[0] = "get_dtc_address",
+		[1] = "propagate_transaction",
+		[5] = "begin",
+		[6] = "promote",
+		[7] = "commit",
+		[8] = "rollback",
+		[9] = "save",
+	} &default=function(t: count): string
+		{
+		return fmt("type_%d", t);
+		};
 
 	## Special stored procedures whose SQL text arrives as a parameter, and which
 	## parameter (1-based) carries it. Used to fill ``statement`` in tds_rpc.log.
 	const statement_parameter: table[string] of count = {
-		["sp_executesql"] = 1, ["sp_prepare"] = 3, ["sp_prepexec"] = 3, ["sp_prepexecrpc"] = 3,
-		["sp_cursoropen"] = 2, ["sp_cursorprepare"] = 3, ["sp_cursorprepexec"] = 4,
+		["sp_executesql"] = 1,
+		["sp_prepare"] = 3,
+		["sp_prepexec"] = 3,
+		["sp_prepexecrpc"] = 3,
+		["sp_cursoropen"] = 2,
+		["sp_cursorprepare"] = 3,
+		["sp_cursorprepexec"] = 4,
 	};
 
 	type Info: record {
@@ -281,16 +340,23 @@ redef record connection += {
 	tds: State &optional;
 };
 
-redef likely_server_ports += { ports };
+redef likely_server_ports += {ports};
 
 event zeek_init() &priority=5
 	{
-	Log::create_stream(LOG, [$columns=Info, $ev=log_tds, $path="tds", $policy=log_policy]);
-	Log::create_stream(LOGIN_LOG, [$columns=LoginInfo, $ev=log_tds_login, $path="tds_login", $policy=log_policy_login]);
-	Log::create_stream(SQL_BATCH_LOG, [$columns=SQLBatchInfo, $ev=log_tds_sql_batch, $path="tds_sql_batch", $policy=log_policy_sql_batch]);
-	Log::create_stream(RPC_LOG, [$columns=RPCInfo, $ev=log_tds_rpc, $path="tds_rpc", $policy=log_policy_rpc]);
-	Log::create_stream(ERROR_LOG, [$columns=ErrorInfo, $ev=log_tds_error, $path="tds_error", $policy=log_policy_error]);
-	Log::create_stream(RESULT_LOG, [$columns=ResultInfo, $ev=log_tds_result, $path="tds_result", $policy=log_policy_result]);
+	Log::create_stream(LOG, [$columns=Info, $ev=log_tds, $path="tds",
+	    $policy=log_policy]);
+	Log::create_stream(LOGIN_LOG, [$columns=LoginInfo, $ev=log_tds_login,
+	    $path="tds_login", $policy=log_policy_login]);
+	Log::create_stream(SQL_BATCH_LOG, [$columns=SQLBatchInfo,
+	    $ev=log_tds_sql_batch, $path="tds_sql_batch",
+	    $policy=log_policy_sql_batch]);
+	Log::create_stream(RPC_LOG, [$columns=RPCInfo, $ev=log_tds_rpc,
+	    $path="tds_rpc", $policy=log_policy_rpc]);
+	Log::create_stream(ERROR_LOG, [$columns=ErrorInfo, $ev=log_tds_error,
+	    $path="tds_error", $policy=log_policy_error]);
+	Log::create_stream(RESULT_LOG, [$columns=ResultInfo, $ev=log_tds_result,
+	    $path="tds_result", $policy=log_policy_result]);
 
 	Analyzer::register_for_ports(Analyzer::ANALYZER_TDS, ports);
 	}
@@ -307,7 +373,8 @@ hook set_session(c: connection)
 	if ( c?$tds )
 		return;
 
-	c$tds = State($login=LoginInfo($ts=network_time(), $uid=c$uid, $id=c$id), $rpc=vector(), $pending_rpc=vector());
+	c$tds = State($login=LoginInfo($ts=network_time(), $uid=c$uid, $id=c$id),
+	    $rpc=vector(), $pending_rpc=vector());
 	Conn::register_removal_hook(c, finalize_tds);
 	}
 
@@ -354,8 +421,8 @@ function summarize(c: connection, info: Info)
 	if ( ! c$tds?$summary )
 		{
 		c$tds$summary = Info($ts=network_time(), $uid=c$uid, $id=c$id, $is_orig=T,
-		                     $msg_type="summary", $len=0, $packets=0, $messages=0,
-		                     $rows=0, $row_count=0, $errors=0);
+		    $msg_type="summary", $len=0, $packets=0, $messages=0,
+		    $rows=0, $row_count=0, $errors=0);
 		c$tds$summary_types = table();
 		schedule summary_interval { TDS::flush_summary_timer(c) };
 		}
@@ -364,7 +431,7 @@ function summarize(c: connection, info: Info)
 	s$len += info$len;
 	s$packets += info$packets;
 	s$messages += 1;
-	local key = (info$is_orig ? "" : "<") + info$msg_type;
+	local key = ( info$is_orig ? "" : "<" ) + info$msg_type;
 	if ( key !in c$tds$summary_types )
 		c$tds$summary_types[key] = 0;
 	c$tds$summary_types[key] += 1;
@@ -376,16 +443,17 @@ function summarize(c: connection, info: Info)
 		}
 	}
 
-event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count, packets: count, sid: count)
+event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count,
+    packets: count, sid: count)
 	{
 	hook set_session(c);
 
 	local info = Info($ts=network_time(), $uid=c$uid, $id=c$id, $is_orig=is_orig,
-	                  $msg_type=packet_types[msg_type], $len=len, $packets=packets);
+	    $msg_type=packet_types[msg_type], $len=len, $packets=packets);
 	if ( c$tds$mars )
 		info$session = sid;
 
-	if ( (! is_orig && msg_type == 4) || (is_orig && msg_type == 7) )
+	if ( ( ! is_orig && msg_type == 4 ) || ( is_orig && msg_type == 7 ) )
 		{
 		info$rows = c$tds$rows;
 		info$row_count = c$tds$row_count;
@@ -425,8 +493,9 @@ event TDS::response(c: connection, rows: count, row_count: count, errors: count)
 	c$tds$errors = errors;
 	}
 
-event TDS::prelogin(c: connection, is_orig: bool, version: string, encryption: count, instance: string,
-                    thread_id: count, mars: bool, fedauth_required: bool, has_nonce: bool, has_trace_id: bool)
+event TDS::prelogin(c: connection, is_orig: bool, version: string,
+    encryption: count, instance: string, thread_id: count, mars: bool,
+    fedauth_required: bool, has_nonce: bool, has_trace_id: bool)
 	{
 	hook set_session(c);
 	local l = c$tds$login;
@@ -452,12 +521,13 @@ event TDS::tls_record(c: connection, is_orig: bool, typ: count, len: count)
 	c$tds$login$encrypted = T;
 	}
 
-event TDS::login7(c: connection, tds_version: string, packet_size: count, client_prog_ver: count,
-                  client_pid: count, flags1: count, flags2: count, type_flags: count, flags3: count,
-                  hostname: string, username: string, has_password: bool, app_name: string,
-                  server_name: string, library: string, language: string, database: string,
-                  attach_db: string, has_sspi: bool, change_password: bool, client_mac: string,
-                  features: string, user_agent: string, fedauth_library: string)
+event TDS::login7(c: connection, tds_version: string, packet_size: count,
+    client_prog_ver: count, client_pid: count, flags1: count, flags2: count,
+    type_flags: count, flags3: count, hostname: string, username: string,
+    has_password: bool, app_name: string, server_name: string, library: string,
+    language: string, database: string, attach_db: string, has_sspi: bool,
+    change_password: bool, client_mac: string, features: string,
+    user_agent: string, fedauth_library: string)
 	{
 	hook set_session(c);
 	local l = c$tds$login;
@@ -478,10 +548,10 @@ event TDS::login7(c: connection, tds_version: string, packet_size: count, client
 	l$hostname = hostname;
 	l$username = username;
 	l$has_password = has_password;
-	l$integrated_auth = (flags2 & 0x80) != 0 || has_sspi;
-	l$odbc = (flags2 & 0x02) != 0;
-	l$oledb = (type_flags & 0x10) != 0;
-	l$read_only_intent = (type_flags & 0x20) != 0;
+	l$integrated_auth = ( flags2 & 0x80 ) != 0 || has_sspi;
+	l$odbc = ( flags2 & 0x02 ) != 0;
+	l$oledb = ( type_flags & 0x10 ) != 0;
+	l$read_only_intent = ( type_flags & 0x20 ) != 0;
 	l$change_password = change_password;
 	l$app_name = app_name;
 	l$server_name = server_name;
@@ -496,7 +566,8 @@ event TDS::login7(c: connection, tds_version: string, packet_size: count, client
 	c$tds$login_pending = T;
 	}
 
-event TDS::login_ack(c: connection, interface: count, tds_version: string, prog_name: string, prog_version: string)
+event TDS::login_ack(c: connection, interface: count, tds_version: string,
+    prog_name: string, prog_version: string)
 	{
 	hook set_session(c);
 	local l = c$tds$login;
@@ -507,7 +578,8 @@ event TDS::login_ack(c: connection, interface: count, tds_version: string, prog_
 	c$tds$login_pending = F;
 	}
 
-event TDS::env_change(c: connection, typ: count, new_value: string, old_value: string)
+event TDS::env_change(c: connection, typ: count, new_value: string,
+    old_value: string)
 	{
 	hook set_session(c);
 	if ( typ == 1 && ! c$tds$login?$initial_database )
@@ -516,8 +588,9 @@ event TDS::env_change(c: connection, typ: count, new_value: string, old_value: s
 		c$tds$login$routed_to = new_value;
 	}
 
-event TDS::error_info(c: connection, is_error: bool, number: count, state: count, class: count,
-                      message: string, server_name: string, procedure: string, line: count)
+event TDS::error_info(c: connection, is_error: bool, number: count,
+    state: count, class: count, message: string, server_name: string,
+    procedure: string, line: count)
 	{
 	hook set_session(c);
 
@@ -529,22 +602,24 @@ event TDS::error_info(c: connection, is_error: bool, number: count, state: count
 		c$tds$login_pending = F;
 		}
 
-	if ( ! log_errors || (! is_error && ! log_info_messages) )
+	if ( ! log_errors || ( ! is_error && ! log_info_messages ) )
 		return;
 
-	Log::write(ERROR_LOG, ErrorInfo($ts=network_time(), $uid=c$uid, $id=c$id, $is_error=is_error,
-	                                $number=number, $state=state, $class=class, $message=truncate(message),
-	                                $server_name=server_name, $procedure=procedure, $line=line));
+	Log::write(ERROR_LOG, ErrorInfo($ts=network_time(), $uid=c$uid, $id=c$id,
+	    $is_error=is_error, $number=number, $state=state, $class=class,
+	    $message=truncate(message), $server_name=server_name,
+	    $procedure=procedure, $line=line));
 	}
 
-event TDS::sql_batch(c: connection, transaction_descriptor: count, query: string)
+event TDS::sql_batch(c: connection, transaction_descriptor: count,
+    query: string)
 	{
 	hook set_session(c);
 	if ( ! log_sql_batches )
 		return;
-	Log::write(SQL_BATCH_LOG, SQLBatchInfo($ts=network_time(), $uid=c$uid, $id=c$id,
-	                                       $transaction_descriptor=transaction_descriptor,
-	                                       $query=truncate(query)));
+	Log::write(SQL_BATCH_LOG, SQLBatchInfo($ts=network_time(), $uid=c$uid,
+	    $id=c$id, $transaction_descriptor=transaction_descriptor,
+	    $query=truncate(query)));
 	}
 
 event TDS::transaction_manager_request(c: connection, request_type: count)
@@ -552,27 +627,30 @@ event TDS::transaction_manager_request(c: connection, request_type: count)
 	hook set_session(c);
 	if ( ! log_sql_batches )
 		return;
-	Log::write(SQL_BATCH_LOG, SQLBatchInfo($ts=network_time(), $uid=c$uid, $id=c$id,
-	                                       $transaction_descriptor=0,
-	                                       $query=fmt("<transaction manager: %s>", transaction_request_types[request_type])));
+	Log::write(SQL_BATCH_LOG, SQLBatchInfo($ts=network_time(), $uid=c$uid,
+	    $id=c$id, $transaction_descriptor=0, $query=fmt(
+	    "<transaction manager: %s>",
+	    transaction_request_types[request_type])));
 	}
 
 # Spicy raises unit events when a unit completes, so within one RPC message Zeek sees
 # rpc_batch, then that batch's rpc_parameter events, then the next batch ... and finally
 # rpc_request for the whole message, which carries the transaction descriptor and closes
 # the request. Batches are logged at that point.
-event TDS::rpc_batch(c: connection, procedure: string, proc_id: count, option_flags: count) &priority=5
+event TDS::rpc_batch(c: connection, procedure: string, proc_id: count,
+    option_flags: count) &priority=5
 	{
 	hook set_session(c);
-	local r = RPCInfo($ts=network_time(), $uid=c$uid, $id=c$id, $transaction_descriptor=0,
-	                  $procedure=procedure, $with_recompile=(option_flags & 0x01) != 0,
-	                  $parameters=vector());
+	local r = RPCInfo($ts=network_time(), $uid=c$uid, $id=c$id,
+	    $transaction_descriptor=0, $procedure=procedure,
+	    $with_recompile=( option_flags & 0x01 ) != 0, $parameters=vector());
 	if ( proc_id > 0 )
 		r$proc_id = proc_id;
 	c$tds$rpc += r;
 	}
 
-event TDS::rpc_parameter(c: connection, name: string, status: count, typ: string, value: string) &priority=5
+event TDS::rpc_parameter(c: connection, name: string, status: count,
+    typ: string, value: string) &priority=5
 	{
 	hook set_session(c);
 	if ( |c$tds$rpc| == 0 )
@@ -582,15 +660,16 @@ event TDS::rpc_parameter(c: connection, name: string, status: count, typ: string
 	local n = |r$parameters| + 1;
 	local label = name == "" ? fmt("@p%d", n) : name;
 	local rendered = truncate(value);
-	r$parameters += fmt("%s %s%s = %s", label, typ, (status & 0x01) != 0 ? " output" : "", rendered);
+	r$parameters += fmt("%s %s%s = %s", label, typ, ( status & 0x01 ) != 0 ?
+	    " output" : "", rendered);
 
-	if ( r$procedure in statement_parameter && statement_parameter[r$procedure] == n )
+	if ( r$procedure in statement_parameter
+	    && statement_parameter[r$procedure] == n )
 		r$statement = rendered;
 	# sp_execute, sp_cursorexecute etc. address a prepared handle in their first parameter;
 	# sp_prepexec and sp_cursoropen return one as an output parameter.
-	if ( n == 1 && (r$procedure in set("sp_execute", "sp_prepexec", "sp_prepare", "sp_unprepare",
-	                                    "sp_cursorexecute", "sp_cursorfetch", "sp_cursorclose",
-	                                    "sp_cursoroption", "sp_cursor", "sp_cursorunprepare")) )
+	if ( n == 1
+	    && ( r$procedure in set("sp_execute", "sp_prepexec", "sp_prepare", "sp_unprepare", "sp_cursorexecute", "sp_cursorfetch", "sp_cursorclose", "sp_cursoroption", "sp_cursor", "sp_cursorunprepare") ) )
 		r$handle = rendered;
 	}
 
@@ -608,7 +687,8 @@ function flush_rpcs(c: connection)
 
 # The request is complete: hold the calls until the server's response has delivered
 # return status and output parameter values, or until the next request.
-event TDS::rpc_request(c: connection, transaction_descriptor: count) &priority=-5
+event TDS::rpc_request(c: connection, transaction_descriptor: count)
+    &priority=-5
 	{
 	hook set_session(c);
 	flush_rpcs(c);
@@ -635,7 +715,8 @@ event TDS::return_value(c: connection, name: string, typ: string, value: string)
 	local r = c$tds$pending_rpc[|c$tds$pending_rpc| - 1];
 	if ( ! r?$output )
 		r$output = vector();
-	r$output += fmt("%s %s = %s", name == "" ? fmt("@out%d", |r$output| + 1) : name, typ, truncate(value));
+	r$output += fmt("%s %s = %s", name == "" ? fmt("@out%d", |r$output| + 1) :
+	    name, typ, truncate(value));
 	}
 
 # Result sets: columns arrive first, rows follow, a DONE with a count closes the set.
@@ -648,13 +729,15 @@ function flush_result(c: connection)
 	delete c$tds$result;
 	}
 
-event TDS::result_columns(c: connection, names: vector of string, types: vector of string)
+event TDS::result_columns(c: connection, names: vector of string, types: vector of
+    string)
 	{
 	hook set_session(c);
 	flush_result(c);
 	if ( ! log_results )
 		return;
-	c$tds$result = ResultInfo($ts=network_time(), $uid=c$uid, $id=c$id, $columns=names, $types=types);
+	c$tds$result = ResultInfo($ts=network_time(), $uid=c$uid, $id=c$id,
+	    $columns=names, $types=types);
 	}
 
 event TDS::result_row(c: connection, values: vector of string)
@@ -672,12 +755,13 @@ event TDS::result_row(c: connection, values: vector of string)
 		}
 	}
 
-event TDS::done(c: connection, typ: count, status: count, cur_cmd: count, row_count: count)
+event TDS::done(c: connection, typ: count, status: count, cur_cmd: count,
+    row_count: count)
 	{
 	if ( ! c?$tds || ! c$tds?$result )
 		return;
 	# DONE_COUNT (0x10) closes the result set that preceded it.
-	if ( (status & 0x10) != 0 )
+	if ( ( status & 0x10 ) != 0 )
 		{
 		c$tds$result$rows = row_count;
 		flush_result(c);
@@ -685,7 +769,8 @@ event TDS::done(c: connection, typ: count, status: count, cur_cmd: count, row_co
 	}
 
 # A server response is complete: log the RPCs it answered and any open result set.
-event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count, packets: count, sid: count) &priority=-10
+event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count,
+    packets: count, sid: count) &priority=-10
 	{
 	if ( ! c?$tds )
 		return;
@@ -706,13 +791,15 @@ hook finalize_tds(c: connection)
 
 # Log the login as soon as the server has answered it, so long-lived sessions
 # show up without waiting for the connection to end.
-event TDS::login_ack(c: connection, interface: count, tds_version: string, prog_name: string, prog_version: string) &priority=-5
+event TDS::login_ack(c: connection, interface: count, tds_version: string,
+    prog_name: string, prog_version: string) &priority=-5
 	{
 	emit_login(c);
 	}
 
-event TDS::error_info(c: connection, is_error: bool, number: count, state: count, class: count,
-                      message: string, server_name: string, procedure: string, line: count) &priority=-5
+event TDS::error_info(c: connection, is_error: bool, number: count,
+    state: count, class: count, message: string, server_name: string,
+    procedure: string, line: count) &priority=-5
 	{
 	if ( c?$tds && c$tds$login?$success && ! c$tds$login$success )
 		emit_login(c);

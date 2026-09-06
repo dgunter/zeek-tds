@@ -8,4 +8,3 @@
 # @TEST-EXEC: btest-diff tds_error.log
 # @TEST-EXEC: test ! -f ssl.log
 # @TEST-EXEC: test ! -f weird.log
-

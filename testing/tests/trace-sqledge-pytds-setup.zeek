@@ -8,4 +8,3 @@
 # @TEST-EXEC: test ! -f tds_error.log
 # @TEST-EXEC: test ! -f ssl.log
 # @TEST-EXEC: test ! -f weird.log
-

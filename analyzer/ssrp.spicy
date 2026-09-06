@@ -16,15 +16,24 @@ public type Request = unit {
     var instance: string = "";
 
     typ: uint8 {
-        if ( $$ == CLNT_BCAST_EX ) self.kind = "broadcast";
-        else if ( $$ == CLNT_UCAST_EX ) self.kind = "enumerate";
-        else if ( $$ == CLNT_UCAST_INST ) self.kind = "instance";
-        else if ( $$ == CLNT_UCAST_DAC ) self.kind = "dac";
-        else self.kind = "0x%02x" % $$;
+        if ($$ == CLNT_BCAST_EX)
+            self.kind = "broadcast";
+        else if ($$ == CLNT_UCAST_EX)
+            self.kind = "enumerate";
+        else if ($$ == CLNT_UCAST_INST)
+            self.kind = "instance";
+        else if ($$ == CLNT_UCAST_DAC)
+            self.kind = "dac";
+        else
+            self.kind = "0x%02x" % $$;
     }
-    switch ( self.typ ) {
-        CLNT_UCAST_INST -> name: bytes &until=b"\x00" { self.instance = $$.decode(spicy::Charset::UTF8); }
-        CLNT_UCAST_DAC -> dac: DACRequest { self.instance = $$.instance.decode(spicy::Charset::UTF8); }
+    switch (self.typ) {
+        CLNT_UCAST_INST -> name: bytes &until=b"\x00" {
+            self.instance = $$.decode(spicy::Charset::UTF8);
+        }
+        CLNT_UCAST_DAC -> dac: DACRequest {
+            self.instance = $$.instance.decode(spicy::Charset::UTF8);
+        }
         * -> : bytes &eod;
     };
 };
@@ -40,11 +49,15 @@ public type Response = unit {
 
     typ: uint8 &requires=($$ == SVR_RESP);
     length: uint16 &byte-order=spicy::ByteOrder::Little;
-    switch ( self.length ) {
+    switch (self.length) {
         # The DAC answer is fixed: RESP_SIZE 0x0006, PROTOCOL_VERSION 0x01, TCP_PORT.
-        6 -> dac: DACResponse { self.dac_port = $$.port_num; }
+        6 -> dac: DACResponse {
+            self.dac_port = $$.port_num;
+        }
         # Otherwise a ";"-delimited key/value string describing each instance, ";;"-terminated.
-        * -> data: bytes &size=self.length { self.text = $$.decode(spicy::Charset::UTF8); }
+        * -> data: bytes &size=self.length {
+            self.text = $$.decode(spicy::Charset::UTF8);
+        }
     };
 };
 

@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Check formatting of the Spicy grammar (spicy-format) and Zeek scripts (zeek-format).
+
+Prints a diff summary, writes the findings as Sonar generic issues JSON, and exits
+non-zero when any file would change. usage: format-check <repo-root> <output.json>
+"""
+
+import difflib
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+
+root, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+issues = []
+rules = {}
+
+
+def check(tool, cmd, files):
+    if shutil.which(tool) is None:
+        print(f"{tool}: not installed, skipped")
+        return
+    rules[tool] = {"id": "format", "name": f"{tool} formatting", "description": f"File differs from {tool} output.",
+                   "engineId": tool, "cleanCodeAttribute": "FORMATTED",
+                   "impacts": [{"softwareQuality": "MAINTAINABILITY", "severity": "LOW"}]}
+    for path in files:
+        formatted = subprocess.run(cmd + [str(path)], capture_output=True, text=True, check=True).stdout
+        original = path.read_text()
+        if formatted == original:
+            continue
+        diff = list(difflib.unified_diff(original.splitlines(), formatted.splitlines(), lineterm="", n=0))
+        first = next((l for l in diff if l.startswith("@@")), "@@ -1")
+        line = int(first.split()[1].lstrip("-").split(",")[0]) or 1
+        changed = sum(1 for l in diff if l.startswith(("+", "-")) and not l.startswith(("+++", "---")))
+        rel = str(path.relative_to(root))
+        print(f"{tool}: {rel} differs ({changed} lines, from line {line})")
+        issues.append({"ruleId": "format", "engineId": tool,
+                       "primaryLocation": {"message": f"not formatted with {tool}: {changed} lines differ",
+                                           "filePath": rel, "textRange": {"startLine": line}}})
+
+
+check("spicy-format", ["spicy-format"], sorted(root.glob("analyzer/*.spicy")) + sorted(root.glob("testing/Files/*.spicy")))
+check("zeek-format", ["zeek-format"], sorted(root.glob("scripts/*.zeek")) + sorted(root.glob("testing/tests/*.zeek")))
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps({"rules": list(rules.values()), "issues": issues}, indent=1))
+print(f"{len(issues)} formatting issue(s) -> {out}")
+sys.exit(1 if issues else 0)

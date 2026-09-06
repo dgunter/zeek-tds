@@ -1,0 +1,6 @@
+# @TEST-DOC: Both directions of a real connection through spicy-driver's batch mode, exercising the shared %context between originator and responder without Zeek. The batch file is recorded from a trace with Zeek's record-spicy-batch script.
+#
+# @TEST-EXEC: zeek -Cr ${TRACES}/sqledge-pytds-failed-login.pcap -b policy/frameworks/spicy/record-spicy-batch
+# @TEST-EXEC: spicyc -j -d -o tds.hlto ${DIST}/analyzer/tds.spicy ${DIST}/testing/Files/harness.spicy
+# @TEST-EXEC: spicy-driver -F batch.dat --parser-alias '1433/tcp=TDS::Stream' tds.hlto >output 2>&1
+# @TEST-EXEC: TEST_DIFF_CANONIFIER= btest-diff output

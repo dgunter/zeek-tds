@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Convert btest's xUnit XML (btest -x) into Sonar's generic test execution XML.
+
+Test names such as "tests.trace-sqledge-freetds" map to testing/tests/trace-sqledge-freetds.zeek
+(or .spicy). usage: btest-to-sonar <btest.xml> <tests-dir> <output.xml>
+"""
+
+import pathlib
+import sys
+import xml.etree.ElementTree as ET
+from xml.sax.saxutils import quoteattr
+
+src, tests_dir, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+root = ET.parse(src).getroot()
+cases = root.iter("testcase")
+by_file: dict[str, list] = {}
+for case in cases:
+    name = case.get("name", "")
+    base = name.split(".", 1)[1] if name.startswith("tests.") else name
+    path = next((p for p in (tests_dir / f"{base}.zeek", tests_dir / f"{base}.spicy") if p.exists()), None)
+    if path is None:
+        continue
+    rel = f"testing/tests/{path.name}"
+    ms = int(float(case.get("time", "0")) * 1000)
+    failure = case.find("failure")
+    error = case.find("error")
+    skipped = case.find("skipped")
+    by_file.setdefault(rel, []).append((name, ms, failure, error, skipped))
+
+with open(out, "w") as f:
+    f.write('<testExecutions version="1">\n')
+    for rel in sorted(by_file):
+        f.write(f"  <file path={quoteattr(rel)}>\n")
+        for name, ms, failure, error, skipped in by_file[rel]:
+            f.write(f'    <testCase name={quoteattr(name)} duration="{ms}"')
+            if failure is not None or error is not None:
+                node = failure if failure is not None else error
+                f.write(f">\n      <failure message={quoteattr(node.get('message', 'failed'))}/>\n    </testCase>\n")
+            elif skipped is not None:
+                f.write(">\n      <skipped message=\"skipped\"/>\n    </testCase>\n")
+            else:
+                f.write("/>\n")
+        f.write("  </file>\n")
+    f.write("</testExecutions>\n")
+print(f"{sum(len(v) for v in by_file.values())} test cases in {len(by_file)} files -> {out}")

@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Merge Zeek script-profiler files into Sonar's generic coverage XML.
+
+Every Zeek run in the test suite writes a ZEEK_PROFILER_FILE (see btest.cfg) with one
+line per executed statement: "<count>\t<path>, line <n>\t<statement>". A source line is
+covered if any statement on it ran in any test. Only the package's own scripts are
+reported, as repo-relative paths.
+
+usage: coverage-to-sonar <profile-dir> <repo-root> <output.xml>
+"""
+
+import pathlib
+import re
+import sys
+from collections import defaultdict
+from xml.sax.saxutils import quoteattr
+
+profile_dir, root, out = (pathlib.Path(a) for a in sys.argv[1:4])
+scripts = root / "scripts"
+hits: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+line_re = re.compile(r"^(\d+)\t(.+?), line (\d+)\t")
+
+for prof in profile_dir.glob("*"):
+    for line in prof.read_text(errors="replace").splitlines():
+        m = line_re.match(line)
+        if not m:
+            continue
+        count, path, lineno = int(m.group(1)), pathlib.Path(m.group(2)), int(m.group(3))
+        # Runs may execute a copy of the tree; key on scripts/<name>.zeek.
+        if path.parent.name != "scripts" or not (scripts / path.name).exists():
+            continue
+        rel = f"scripts/{path.name}"
+        hits[rel][lineno] = max(hits[rel][lineno], count)
+
+with open(out, "w") as f:
+    f.write('<coverage version="1">\n')
+    for rel in sorted(hits):
+        f.write(f"  <file path={quoteattr(rel)}>\n")
+        for lineno in sorted(hits[rel]):
+            covered = "true" if hits[rel][lineno] > 0 else "false"
+            f.write(f'    <lineToCover lineNumber="{lineno}" covered="{covered}"/>\n')
+        f.write("  </file>\n")
+    f.write("</coverage>\n")
+
+total = sum(len(v) for v in hits.values())
+covered = sum(1 for v in hits.values() for c in v.values() if c > 0)
+print(f"{covered}/{total} script lines covered across {len(hits)} files -> {out}")

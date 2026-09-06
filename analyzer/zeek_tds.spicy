@@ -8,7 +8,7 @@ import zeek;
 
 # A well-formed PRELOGIN or LOGIN7 is unmistakable.
 on TDS::Prelogin::%done {
-    if ( self.version != "" )
+    if (self.version != "")
         zeek::confirm_protocol();
 }
 
@@ -20,7 +20,7 @@ on TDS::Login7::%done {
 # and once encryption is on, every later byte is a bare TLS record. Both go to the SSL
 # analyzer, which yields ssl.log and x509.log for the SQL session.
 function forward_tls(ctx: TDS::Context&, data: bytes) {
-    if ( ! ctx.ssl_started ) {
+    if (!ctx.ssl_started) {
         zeek::protocol_begin("SSL");
         ctx.ssl_started = True;
     }
@@ -28,16 +28,16 @@ function forward_tls(ctx: TDS::Context&, data: bytes) {
 }
 
 on TDS::Packet::%done {
-    if ( typ == TDS::TYPE_PRELOGIN && TDS::is_tls_record(self.payload) )
+    if (typ == TDS::TYPE_PRELOGIN && TDS::is_tls_record(self.payload))
         forward_tls(ctx, self.payload);
 }
 
 on TDS::Frame::%done {
-    if ( self?.tls ) {
-        forward_tls(ctx, pack(self.typ, spicy::ByteOrder::Big)
-            + pack(self.tls.version, spicy::ByteOrder::Big)
-            + pack(self.tls.length, spicy::ByteOrder::Big)
-            + self.tls.payload);
+    if (self?.tls) {
+        forward_tls(
+            ctx,
+            pack(self.typ, spicy::ByteOrder::Big) + pack(self.tls.version, spicy::ByteOrder::Big) + pack(self.tls.length, spicy::ByteOrder::Big) + self.tls.payload
+        );
     }
 }
 
@@ -61,14 +61,14 @@ on TDS::RPCBody::%error(msg: string) {
 # Feeding them there yields ntlm.log with the domain, account and workstation.
 function forward_sspi(data: bytes) {
     local mech = TDS::sspi_mechanism(data);
-    if ( mech == "ntlm" )
+    if (mech == "ntlm")
         zeek::protocol_data_in(zeek::is_orig(), data, zeek::protocol_handle_get_or_create("NTLM"));
-    else if ( mech == "gssapi" )
+    else if (mech == "gssapi")
         zeek::protocol_data_in(zeek::is_orig(), data, zeek::protocol_handle_get_or_create("GSSAPI"));
 }
 
 on TDS::Login7::%done {
-    if ( |self.sspi| > 0 )
+    if (|self.sspi| > 0)
         forward_sspi(self.sspi);
 }
 

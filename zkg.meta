@@ -1,6 +1,6 @@
 [package]
 script_dir = scripts
-test_command = cd testing && btest -c btest.cfg
+test_command = cd testing && mkdir -p .tmp/script-coverage && btest -c btest.cfg
 summary = Spicy analyzer for Microsoft SQL Server's Tabular Data Stream (TDS) protocol
 description = Parses TDS 7.x (SQL Server 2000 through 2022, Azure SQL) and logs logins,
 	SQL batches, remote procedure calls with typed parameters, server errors and

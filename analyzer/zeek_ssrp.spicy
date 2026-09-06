@@ -4,7 +4,7 @@ import SSRP;
 import zeek;
 
 on SSRP::Request::%done {
-    if ( self.kind != "" && self.typ <= 0x0F )
+    if (self.kind != "" && self.typ <= 0x0F)
         zeek::confirm_protocol();
 }
 
