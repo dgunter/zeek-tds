@@ -13,15 +13,16 @@ Picture a plant historian on a segmented network. Dozens of hosts talk to it
 over TDS: HMIs polling, engineering workstations poking at configuration, a
 reporting server pulling a night's worth of tags, and every so often
 something that should not be there. The traffic is easy to see and hard to
-read. Wireshark decodes it one capture at a time, and the only Zeek package
-for TDS stopped building on current Zeek and mangles the procedure calls that
-carry most of the SQL.
+read: most of the SQL travels inside remote procedure calls addressed by
+number, results come back as typed binary tokens, and a busy client may
+multiplex several sessions over one connection.
 
 This analyzer reads TDS 7.x continuously. It reassembles messages across
-packets, decodes both directions, renders every parameter value by type,
-follows the connection into TLS when the two sides negotiate encryption, and
-tags every line with the Zeek connection `uid`, so the SQL sits next to
-`conn.log`, `ssl.log` and everything else Zeek saw. It runs on Zeek 7 and 8.
+packets and MARS sessions, decodes both directions, renders every parameter
+value by type, follows the connection into TLS when the two sides negotiate
+encryption, and tags every line with the Zeek connection `uid`, so the SQL
+sits next to `conn.log`, `ssl.log` and everything else Zeek saw. It runs on
+Zeek 7 and 8.
 
 ## One session, log by log
 
@@ -84,7 +85,10 @@ first statements:
 1788649652.200528	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	26	1	0	0	0
 ```
 
-`is_orig` is `T` for client to server. Requests carry a type and a size;
+`is_orig` is `T` for client to server. When a .NET client multiplexes
+sessions over one connection (MARS), the `session` column carries the SMP
+session id so concurrent requests and their responses can be paired.
+Requests carry a type and a size;
 server responses (`tabular_result`) additionally say how many rows they
 returned, how many rows the DONE tokens reported affected, and how many
 errors they contained. Later in the same session a `SELECT *` comes back as
@@ -359,8 +363,9 @@ by-reference parameters, `NULL` for nulls, hex for binary), `statement`,
 
 **tds.log**: `is_orig`, `msg_type` (`prelogin`, `login7`, `sql_batch`,
 `rpc`, `tabular_result`, `attention`, `bulk_load`, `transaction_manager`,
-`sspi`, `fedauth_token`, `pre_tds7_login`), `len`, `packets`, `rows`,
-`row_count`, `errors`.
+`sspi`, `fedauth_token`, `pre_tds7_login`, or `summary`), `len`, `packets`,
+`session` (MARS), `rows`, `row_count`, `errors`, and in summary mode
+`messages` and `msg_types`.
 
 ## Installation
 
@@ -383,9 +388,32 @@ signature when a PRELOGIN or LOGIN7 message is seen on any port.
 
 ## Options
 
+`tds.log` is one line per message, which on a busy database server is a lot
+of lines. It stays on by default; two fallbacks exist for loud networks.
+`SUMMARY` mode writes one line per connection per interval with totals and a
+breakdown of message types (server-to-client types prefixed with `<`):
+
+```
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	is_orig	msg_type	len	packets	session	rows	row_count	errors	messages	msg_types
+1788649652.186304	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	summary	115954	288	-	67	131	2	282	<tabular_result:141,attention:62,login7:1,prelogin:1,rpc:62,sql_batch:11,transaction_manager:4
+```
+
+and `DISABLED` turns it off. Every other log has its own switch as well.
+
 ```zeek
 # Additional ports.
 redef TDS::ports += { 14330/tcp };
+
+# tds.log: PER_MESSAGE (default), SUMMARY, or DISABLED.
+redef TDS::message_log_mode = TDS::SUMMARY;
+redef TDS::summary_interval = 5min;
+
+# The other logs, all on by default.
+redef TDS::log_logins = T;
+redef TDS::log_sql_batches = T;
+redef TDS::log_rpcs = T;
+redef TDS::log_rpc_parameters = F;   # keep tds_rpc.log but drop the parameter list
+redef TDS::log_errors = T;
 
 # Also log INFO messages (severity below 11) to tds_error.log.
 redef TDS::log_info_messages = T;
@@ -398,7 +426,8 @@ redef Log::default_max_field_string_bytes = 65536;
 
 ## What is and is not decoded
 
-Decoded: packet framing and message reassembly in both directions; PRELOGIN
+Decoded: packet framing and message reassembly in both directions, including
+SMP session multiplexing (MARS); PRELOGIN
 options and the encryption negotiation; LOGIN7 (all fields except the
 obfuscated password, which is only reported as present); SQL batches with
 ALL_HEADERS; RPC requests including numbered procedures, multiple batches, and
@@ -406,8 +435,9 @@ parameters of every fixed-length, byte-length, ushort-length, long-length and
 partially-length-prefixed type, rendered by type (integers, decimals, money,
 floats, strings, binary, GUIDs, all date and time types); transaction manager
 requests; the server token stream: LOGINACK, ENVCHANGE, ERROR, INFO, DONE,
-RETURNSTATUS, RETURNVALUE, COLMETADATA, ROW and NBCROW (values are parsed to
-keep the stream aligned, row counts are logged), FEATUREEXTACK.
+RETURNSTATUS, RETURNVALUE, COLMETADATA including Always Encrypted key tables
+and crypto metadata, ROW and NBCROW (values are parsed to keep the stream
+aligned, row counts are logged), FEATUREEXTACK.
 
 Not decoded: the contents of bulk-load rows and SSPI blobs (logged as messages
 only); result row values; TDS 8.0 (TLS from the first byte, which the SSL
@@ -424,8 +454,9 @@ parsed normally.
 
 The test suite runs Zeek over the captures in `testing/Traces` and compares
 every log against a baseline. The captures come from Azure SQL Edge (the SQL
-Server 2019 engine, TDS 7.4) driven by pytds and FreeTDS, plus a 2009 capture
-of TDS 7.1 and 7.2 clients; client identifiers in them are synthetic.
+Server 2019 engine, TDS 7.4) driven by pytds, FreeTDS and Microsoft.Data.SqlClient
+(with and without MARS), plus a 2009 capture of TDS 7.1 and 7.2 clients;
+client identifiers in them are synthetic.
 
 ```bash
 zkg test .            # or: cd testing && btest -c btest.cfg
