@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Spicy-level tests: a harness module exposes the grammar's units to
+  spicy-driver for byte-level unit tests, and a batch-mode test replays both
+  directions of a trace through the shared connection context without Zeek.
+- Formatting enforced with spicy-format and zeek-format; grammar and scripts
+  reformatted.
+- CI produces SonarCloud generic reports (btest results, Zeek script coverage
+  from the script profiler, formatter findings) and scans when a token is set.
+
 ## 0.2.0 - 2026-09-06
 
 - MARS: TDS packets wrapped in SMP session multiplexing are unwrapped and

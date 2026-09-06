@@ -31,4 +31,61 @@ jobs:
           zeek -NN | grep -q ANALYZER_TDS
       - name: Run the test suite
         run: |
-          cd testing && btest -c btest.cfg -d
+          cd testing && mkdir -p .tmp/script-coverage && btest -c btest.cfg -d
+
+  quality:
+    name: Formatting, coverage and Sonar reports
+    runs-on: ubuntu-latest
+    container: zeek/zeek:8.2.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain, zeekscript and spicy-format
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q g++ cmake make git libpcap-dev libssl-dev python3-pip curl xz-utils
+          pip3 install --break-system-packages zeekscript
+          curl -sSL https://github.com/bbannier/spicy-format/releases/latest/download/spicy-format-x86_64-unknown-linux-gnu.tar.xz | tar -xJ -C /tmp
+          install -m 755 "$(find /tmp -name spicy-format -type f | head -1)" /usr/local/bin/spicy-format
+          zeek-format --version && spicy-format --version
+      - name: Build the analyzer in-tree
+        run: mkdir -p build && cd build && cmake .. && cmake --build .
+      - name: Tests with script coverage, formatter check
+        run: make -C testing sonar-reports
+      - name: Formatting must be clean
+        run: testing/Scripts/format-check . /tmp/format.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sonar-reports
+          path: |
+            testing/.tmp/sonar-tests.xml
+            testing/.tmp/sonar-coverage.xml
+            testing/.tmp/sonar-issues.json
+          if-no-files-found: error
+
+  sonar:
+    name: SonarCloud
+    needs: quality
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: sonar-reports
+          path: testing/.tmp
+      - name: SonarCloud scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
+      - name: Post SonarCloud results to the PR
+        if: env.SONAR_TOKEN != '' && github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/sonar_pr_report.py
+      - name: Sonar skipped
+        if: env.SONAR_TOKEN == ''
+        run: echo "SONAR_TOKEN is not set; scan skipped."

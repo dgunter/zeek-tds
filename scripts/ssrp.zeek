@@ -33,7 +33,8 @@ redef record connection += {
 
 event zeek_init() &priority=5
 	{
-	Log::create_stream(LOG, [$columns=Info, $ev=log_ssrp, $path="ssrp", $policy=log_policy]);
+	Log::create_stream(LOG, [$columns=Info, $ev=log_ssrp, $path="ssrp",
+	    $policy=log_policy]);
 	}
 
 function emit(c: connection)
@@ -68,7 +69,8 @@ function parse_instances(text: string): vector of string
 			}
 		if ( "InstanceName" !in fields )
 			next;
-		local desc = fmt("%s\\%s", "ServerName" in fields ? fields["ServerName"] : "?", fields["InstanceName"]);
+		local desc = fmt("%s\\%s", "ServerName" in fields ? fields["ServerName"] :
+		    "?", fields["InstanceName"]);
 		if ( "Version" in fields )
 			desc += fmt(" %s", fields["Version"]);
 		if ( "tcp" in fields )
@@ -83,7 +85,8 @@ function parse_instances(text: string): vector of string
 event SSRP::response(c: connection, text: string, dac_port: count)
 	{
 	if ( ! c?$ssrp )
-		c$ssrp = Info($ts=network_time(), $uid=c$uid, $id=c$id, $request="unsolicited");
+		c$ssrp = Info($ts=network_time(), $uid=c$uid, $id=c$id,
+		    $request="unsolicited");
 	c$ssrp$answered = T;
 	if ( dac_port > 0 )
 		c$ssrp$dac_port = dac_port;

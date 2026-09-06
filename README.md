@@ -566,27 +566,59 @@ parsed normally.
 
 ## Development
 
-The test suite runs Zeek over the captures in `testing/Traces` and compares
-every log against a baseline. The captures come from Azure SQL Edge (the SQL
-Server 2019 engine, TDS 7.4) driven by pytds, FreeTDS and Microsoft.Data.SqlClient
-(with and without MARS), plus a 2009 capture of TDS 7.1 and 7.2 clients;
-client identifiers in them are synthetic.
+Three layers of tests, all run by [btest](https://github.com/zeek/btest), the
+regression framework Zeek and Spicy use themselves:
+
+- **Unit tests of the grammar** (`testing/tests/spicy-units.spicy`): individual
+  units are fed bytes lifted from the captures or crafted by hand through
+  `spicy-driver`, and a harness module in `testing/Files/harness.spicy` prints
+  what they decoded: a PRELOGIN, a LOGIN7, a token stream, an RPC, SMP framing,
+  and one line per data type showing how its value renders.
+- **Both directions without Zeek** (`testing/tests/spicy-batch.spicy`): Zeek's
+  `record-spicy-batch` script turns a trace into a batch file, and
+  `spicy-driver -F` replays both sides through the parser so the shared
+  connection context is exercised on its own.
+- **End to end** (`testing/tests/trace-*.zeek` and the detection tests): Zeek
+  over every capture in `testing/Traces`, every log compared against a
+  baseline, plus the notices with lowered thresholds.
+
+The captures come from Azure SQL Edge (the SQL Server 2019 engine, TDS 7.4)
+driven by pytds, FreeTDS and Microsoft.Data.SqlClient (with and without MARS),
+a recorded SQL Browser exchange, and a 2009 capture of TDS 7.1 and 7.2
+clients; client identifiers in them are synthetic.
 
 ```bash
-zkg test .            # or: cd testing && btest -c btest.cfg
+zkg test .                      # or: make -C testing test
 ```
+
+The grammar is formatted with [spicy-format](https://github.com/bbannier/spicy-format)
+and the scripts with [zeekscript](https://github.com/zeek/zeekscript)'s
+`zeek-format`; CI fails on any file that would change:
+
+```bash
+spicy-format -i analyzer/*.spicy testing/Files/*.spicy
+zeek-format --inplace scripts/*.zeek testing/tests/*.zeek
+testing/Scripts/format-check . /tmp/issues.json
+```
+
+CI runs the package install and test suite on Zeek 8.2 and the LTS release, and
+a quality job that produces what SonarCloud can consume for languages it does
+not analyse itself: the btest results as a generic test report, statement
+coverage of the Zeek scripts from Zeek's script profiler
+(`ZEEK_PROFILER_FILE` in `btest.cfg`, merged by
+`testing/Scripts/coverage-to-sonar`), and formatter findings as external
+issues. `make -C testing sonar-reports` builds the same reports locally.
 
 To work without installing, compile the analyzer into an object file and pass
 it to Zeek directly:
 
 ```bash
-spicyz -o tds.hlto analyzer/tds.spicy analyzer/zeek_tds.spicy analyzer/tds.evt
+spicyz -o tds.hlto analyzer/*.spicy analyzer/tds.evt analyzer/ssrp.evt
 zeek -Cr testing/Traces/sqledge-pytds-workload.pcap tds.hlto scripts
 ```
 
-Both work inside the official `zeek/zeek` container once `g++`, `cmake`,
-`make`, `libpcap-dev` and `libssl-dev` are installed; CI does exactly that on
-Zeek 8.2 and the LTS release.
+All of it works inside the official `zeek/zeek` container once `g++`, `cmake`,
+`make`, `libpcap-dev` and `libssl-dev` are installed.
 
 ## License
 
