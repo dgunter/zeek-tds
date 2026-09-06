@@ -1,340 +1,366 @@
 # zeek-tds
 
-A [Zeek](https://zeek.org) protocol analyzer for Microsoft SQL Server's wire
-protocol, Tabular Data Stream (TDS), written in [Spicy](https://docs.zeek.org/projects/spicy).
-It turns SQL Server traffic into five logs, one per question a hunter asks of a
-database: who connected, what they ran, what they called, what went wrong, and
-how much came back.
+A [Zeek](https://zeek.org) protocol analyzer for Tabular Data Stream, the wire
+protocol every client uses to talk to Microsoft SQL Server, written in
+[Spicy](https://docs.zeek.org/projects/spicy). It watches port 1433 (or any
+port it recognises TDS on) and writes five logs that between them answer the
+questions a hunter asks of a database: who connected, from what, as whom, what
+they ran, what they called, what broke, and how much came back.
 
-| Log | One line per | Answers |
-| --- | --- | --- |
-| [`tds_login.log`](#tds_loginlog) | connection | who connected, from which host and tool, as whom, to which database, and whether the login succeeded |
-| [`tds_sql_batch.log`](#tds_sql_batchlog) | SQL batch | the statement text as sent, with its transaction |
-| [`tds_rpc.log`](#tds_rpclog) | procedure call | procedure name, every parameter with type and value, and the SQL text inside prepared statements |
-| [`tds_error.log`](#tds_errorlog) | server error | number, severity, state and message |
-| [`tds.log`](#tdslog) | TDS message | direction, type, size, and for results the rows returned and affected |
+## The problem it solves
 
-Sessions that negotiate encryption are handed to Zeek's SSL analyzer, so
-`ssl.log` and `x509.log` cover them and `tds_login.log` records that the
-session went encrypted.
+Picture a plant historian on a segmented network. Dozens of hosts talk to it
+over TDS: HMIs polling, engineering workstations poking at configuration, a
+reporting server pulling a night's worth of tags, and every so often
+something that should not be there. The traffic is easy to see and hard to
+read. Wireshark decodes it one capture at a time, and the only Zeek package
+for TDS stopped building on current Zeek and mangles the procedure calls that
+carry most of the SQL.
 
-Every example below is real output from the captures in `testing/Traces`,
-shown with `zeek-cut`. The connection columns `ts`, `uid` and `id.*` open
-every log and are omitted here.
+This analyzer reads TDS 7.x continuously. It reassembles messages across
+packets, decodes both directions, renders every parameter value by type,
+follows the connection into TLS when the two sides negotiate encryption, and
+tags every line with the Zeek connection `uid`, so the SQL sits next to
+`conn.log`, `ssl.log` and everything else Zeek saw. It runs on Zeek 7 and 8.
 
-## Why
+## One session, log by log
 
-TDS is how every client talks to SQL Server, and SQL Server is where a great
-many historians, MES systems and line-of-business applications keep their
-data. The hunting questions are always the same: which hosts speak to the
-database, as whom, with what tool, and what do they run. Wireshark answers
-them one capture at a time. Zeek answers them continuously, for every session,
-with the `uid` that joins to `conn.log`, `ssl.log` and the rest of the stack.
+Everything below is real output from `testing/Traces/sqledge-pytds-workload.pcap`,
+a Python client working against Azure SQL Edge. Zeek writes tab-separated
+files with a header that names and types the columns. Unset fields are `-`,
+empty ones `(empty)`, vectors are comma-separated, and newlines and commas
+inside values are escaped as `\x0a` and `\x2c`.
 
-The existing Zeek package for TDS is a BinPAC plugin that no longer builds on
-current Zeek and misparses procedure calls addressed by number, which is
-exactly how drivers ship ad-hoc SQL (`sp_executesql`, `sp_prepexec`,
-`sp_execute`). This analyzer decodes those with their parameters, reassembles
-multi-packet messages, renders parameter values by type, reads the server's
-response tokens, and follows the connection into TLS. It runs on Zeek 7 and 8.
-
-## tds_login.log
-
-One line per connection, written when the server answers the login (or when
-the connection ends, if it never did). It merges the client's PRELOGIN, its
-LOGIN7, and the server's PRELOGIN reply, LOGINACK and first ENVCHANGE.
-
-A Python client connecting with SQL authentication:
+It starts, as everything in Zeek does, with `conn.log`. One TCP connection,
+identified by the `uid` that every other line in this walk-through carries:
 
 ```
-tds_version             7.4
-client_version          1.0.0.0
-server_version          15.0.2000.0
-client_encryption       not_supported
-server_encryption       not_supported
-encrypted               F
-instance                MSSQLServer
-hostname                workstation-01
-username                sa
-has_password            T
-integrated_auth         F
-app_name                zeek-tds-corpus
-library                 Python TDS Library
-database                zeektds
-client_pid              35535
-client_mac              02:42:AC:11:00:02
-odbc                    T
-server_product          Microsoft SQL Server
-server_product_version  15.0.2000
-server_tds_version      7.4
-initial_database        zeektds
-success                 T
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	proto	service	duration	orig_bytes	resp_bytes	conn_state
+1788649652.185880	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	tcp	tds	1.180330	84022	34236	S2
 ```
 
-The same client with a wrong password. The server answers with error 18456
-before any LOGINACK, and the line records it:
+### tds_login.log: who this is
+
+The first thing the analyzer learns is who is on the line. The client's
+PRELOGIN says what driver version it runs and whether it wants encryption; its
+LOGIN7 names the machine, the account, the application, the library and the
+database; the server answers with its product and version and either a
+LOGINACK or an error. All of that lands on one line per connection:
 
 ```
-hostname        workstation-01
-username        sa
-app_name        zeek-tds-badpw
-library         Python TDS Library
-tds_version     7.4
-success         F
-error_number    18456
-error_message   Login failed for user 'sa'.
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	tds_version	client_version	server_version	client_encryption	server_encryption	encrypted	instance	mars	hostname	username	has_password	integrated_auth	app_name	server_name	library	language	database	attach_db	client_pid	client_prog_ver	client_mac	read_only_intent	odbc	oledb	change_password	server_product	server_product_version	server_tds_version	initial_database	success	error_number	error_message
+#types	time	string	addr	port	addr	port	string	string	string	string	string	bool	string	bool	string	string	bool	bool	string	string	string	string	string	string	count	count	string	bool	bool	bool	bool	string	string	string	string	bool	count	string
+1788649652.188908	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	7.4	1.0.0.0	15.0.2000.0	not_supported	not_supported	F	MSSQLServer	F	workstation-01	sa	T	F	zeek-tds-corpus	127.0.0.1	Python TDS Library	-	zeektds	-	35535	16777216	02:42:AC:11:00:02	F	T	F	F	Microsoft SQL Server	15.0.2000	7.4	zeektds	T	-	-
 ```
 
-Fields worth knowing:
+Reading across: a TDS 7.4 client on a host calling itself `workstation-01`,
+process 35535, logging in as `sa` with a password rather than Windows
+authentication, from an application named `zeek-tds-corpus` using the Python
+TDS library, asking for the `zeektds` database and getting it. Neither side
+asked for encryption. The server is Microsoft SQL Server 15.0.2000, which is
+the 2019 engine, and the login succeeded. The MAC address is the one LOGIN7
+carries as its client id, which is often the only hardware identifier a
+database ever sees.
 
-| Field | Meaning |
-| --- | --- |
-| `hostname`, `client_pid`, `client_mac` | what the client says about itself: machine name, process id, and the NIC address LOGIN7 carries as ClientID |
-| `username`, `has_password`, `integrated_auth` | SQL authentication with a password, or Windows integrated authentication (SSPI); the password itself is never decoded |
-| `app_name`, `library`, `odbc`, `oledb` | the application and driver: "Python TDS Library", "Core .Net SqlClient Data Provider", "ODBC Driver 18 for SQL Server", jTDS, "OSQL-32" and so on |
-| `database`, `initial_database` | the database asked for, and the one the server actually put the session in |
-| `client_encryption`, `server_encryption`, `encrypted` | what each side asked for in PRELOGIN, and whether TLS actually started |
-| `server_product`, `server_product_version`, `server_tds_version` | from LOGINACK: product name, version such as `15.0.2000` (SQL Server 2019) or `16.0.x` (2022), and the TDS version the server settled on |
-| `success`, `error_number`, `error_message` | LOGINACK seen, or the ERROR token that came instead |
-| `read_only_intent`, `change_password`, `attach_db`, `mars`, `language` | the rarer LOGIN7 options |
+That is already most of a hunt. An `app_name` nobody recognises, `sa` from a
+workstation, a `hostname` that disagrees with DNS for `id.orig_h`, or a driver
+that no sanctioned application uses all stand out on this one line.
 
-Hunting notes: an `app_name` or `library` you do not recognise talking to a
-historian; `sa` or another shared account from a workstation; a `hostname`
-that does not match the DNS name of `id.orig_h`; bursts of `success F` from one
-source; `encrypted F` where policy says otherwise.
+### tds.log: the rhythm of the conversation
 
-When the two sides negotiate encryption only for the login (FreeTDS's and
-many drivers' default), LOGIN7 is inside TLS and the client fields are empty,
-but the server's answer is in the clear, so the login outcome is still known:
+`tds.log` has a line for every message in either direction, after the
+analyzer has reassembled it from its packets. It is the skeleton the other
+logs hang off. The first lines of our session show the handshake and the
+first statements:
 
 ```
-tds_version        -
-client_version     9.0.0.0
-client_encryption  off
-server_encryption  off
-encrypted          T
-server_product     Microsoft SQL Server
-initial_database   zeektds
-success            T
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	is_orig	msg_type	len	packets	rows	row_count	errors
+#types	time	string	addr	port	addr	port	bool	string	count	count	count	count	count
+1788649652.186304	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	prelogin	50	1	-	-	-
+1788649652.187838	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	35	1	0	0	0
+1788649652.188908	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	login7	248	1	-	-	-
+1788649652.192683	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	385	1	0	0	0
+1788649652.193828	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	sql_batch	916	1	-	-	-
+1788649652.200528	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	26	1	0	0	0
 ```
 
-With encryption for the whole session, only the PRELOGIN exchange is visible.
-The line then shows the negotiation and the session continues in `ssl.log`
-under the same `uid`:
+`is_orig` is `T` for client to server. Requests carry a type and a size;
+server responses (`tabular_result`) additionally say how many rows they
+returned, how many rows the DONE tokens reported affected, and how many
+errors they contained. Later in the same session a `SELECT *` comes back as
+a four-packet message with sixty rows, and in another trace a bulk load goes
+the other way:
 
 ```
-client_encryption  on
-server_encryption  on
-encrypted          T
-server_version     15.0.2000.0
+1788649652.338220	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	F	tabular_result	12995	4	60	60	0
+1788649656.417964	ClyAae4GU1BSVUAKl	172.19.0.1	55272	172.19.0.2	1433	T	bulk_load	12110	3	-	-	-
 ```
 
-```
-# ssl.log, same uid
-version  TLSv12
-cipher   TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-server_name  127.0.0.1
-```
+Volume lives here: a host that normally reads a handful of rows and one night
+reads a million shows up as a `rows` column nobody expected.
 
-## tds_sql_batch.log
+### tds_sql_batch.log: what they typed
 
-One line per SQL batch: the statement text exactly as the client sent it,
-with the transaction descriptor from the batch's headers. Transaction manager
-requests, which have no SQL text, appear as `<transaction manager: begin>`,
-`commit` or `rollback`, so the transaction boundaries are visible in one place.
+When the client sends plain SQL it arrives as a SQL batch, and the statement
+is logged exactly as sent. Our client creates a table, then runs a
+transaction. Transaction manager requests have no SQL text of their own, so
+they appear as `<transaction manager: begin>` and friends, which puts the
+transaction boundaries and the statements inside them in one place:
 
 ```
-transaction_descriptor  query
-0                       IF OBJECT_ID('dbo.readings') IS NULL CREATE TABLE dbo.readings (\x0a  id int IDENTITY PRIMARY KEY, tag nvarchar(64) NOT NULL, ...
-0                       TRUNCATE TABLE dbo.readings
-0                       SELECT * FROM dbo.readings ORDER BY id
-0                       CREATE PROCEDURE dbo.usp_get_readings @tag nvarchar(64), @min float = 0, @count int OUTPUT AS\x0a  BEGIN SELECT @count = COUNT(*) ...
-0                       <transaction manager: begin>
-219043332162            UPDATE dbo.readings SET quality = 0 WHERE id = 1
-0                       <transaction manager: commit>
-219043332163            UPDATE dbo.readings SET quality = 1 WHERE id = 2
-0                       <transaction manager: rollback>
-0                       SELECT * FROM dbo.does_not_exist
-0                       RAISERROR('custom failure %d', 16, 1, 42)
-0                       PRINT 'hello from tds'
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	transaction_descriptor	query
+#types	time	string	addr	port	addr	port	count	string
+1788649652.354631	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	<transaction manager: begin>
+1788649652.354934	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	219043332162	UPDATE dbo.readings SET quality = 0 WHERE id = 1
+1788649652.355940	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	<transaction manager: commit>
+1788649652.357826	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	SELECT * FROM dbo.does_not_exist
+1788649652.359079	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	RAISERROR('custom failure %d', 16, 1, 42)
 ```
 
-A FreeTDS client does its transactions in SQL instead; the descriptor the
-server handed out in ENVCHANGE then tags every statement inside them:
+The `transaction_descriptor` is the number the server handed out when the
+transaction began. Every statement and every procedure call inside that
+transaction carries it, in this log and in `tds_rpc.log`, so a transaction can
+be reassembled across both. Here is a FreeTDS client from another trace doing
+its transaction in SQL rather than through the transaction manager; the
+descriptor appears once the server has started it:
 
 ```
-0                       BEGIN TRAN
-219043332097            SELECT TOP 10 id, tag, value, ts FROM dbo.readings WHERE quality IS NOT NULL
-219043332097            SELECT 42 AS n, N'freetds' AS s
-219043332097            COMMIT TRAN
+1788649658.454320	CufcEX3NwEIkMYhrij	172.19.0.1	55276	172.19.0.2	1433	0	BEGIN TRAN
+1788649658.457145	CufcEX3NwEIkMYhrij	172.19.0.1	55276	172.19.0.2	1433	219043332097	SELECT TOP 10 id, tag, value, ts FROM dbo.readings WHERE quality IS NOT NULL
+1788649658.464224	CufcEX3NwEIkMYhrij	172.19.0.1	55276	172.19.0.2	1433	219043332097	SELECT 42 AS n, N'freetds' AS s
+1788649658.468350	CufcEX3NwEIkMYhrij	172.19.0.1	55276	172.19.0.2	1433	219043332097	COMMIT TRAN
 ```
 
-Newlines in statements are escaped as `\x0a`, and statements longer than
-`TDS::max_text` (1024 bytes by default) are cut; see [Options](#options).
-
-Hunting notes: `xp_cmdshell`, `sp_configure`, `OPENROWSET`, `BULK INSERT`,
-`sp_addlogin`, `ALTER LOGIN`, `sp_OACreate`, `xp_dirtree`, `SELECT ... INTO
-OUTFILE`-style exfiltration, `DROP` and `TRUNCATE` on historian tables,
-`WAITFOR DELAY` and `IF ... ELSE` probes typical of injection, and any batch
-from a host that normally only calls procedures.
-
-## tds_rpc.log
-
-One line per remote procedure call. The procedure is named, or resolved from
-its number for the fifteen special procedures drivers use for prepared and
-parameterised statements, and every parameter is rendered as `@name type =
-value`. For `sp_executesql`, `sp_prepare`, `sp_prepexec` and the cursor
-procedures, the SQL text they carry is lifted into `statement`, and prepared
-statement handles into `handle`, so an `sp_execute` can be tied back to the
-`sp_prepexec` that defined it.
-
-A parameterised insert from a Python client, which the driver ships as
-`sp_executesql` with typed parameters. Every TDS data type is rendered as a
-value:
+and, from `tds_rpc.log` of the same session, the procedure call that ran
+between those statements, inside the same transaction:
 
 ```
-procedure   sp_executesql
-proc_id     10
-parameters  @p1 nvarchar(max) = INSERT INTO dbo.readings (tag, value, quality, ts, note, blob, amount, price, flag, guid, d, t, dto, big, xmlcol) VALUES (@P1, @P2, ... @P15),
-            @p2 nvarchar(max) = @P1 NVARCHAR(MAX),@P2 FLOAT,@P3 INT,@P4 DATETIME2(6),@P5 NVARCHAR(MAX),@P6 VARBINARY(8000),@P7 DECIMAL(8, 4),@P8 DECIMAL(4, 2),@P9 BIT,@P10 UNIQUEIDENTIFIER,@P11 DATE,@P12 TIME(6),@P13 DATETIMEOFFSET(6),@P14 BIGINT,@P15 NVARCHAR(MAX),
-            @P1 nvarchar(max) = PUMP-001.FLOW,
-            @P2 floatn(8) = 13.5,
-            @P3 intn(4) = 192,
-            @P4 datetime2 = 2026-09-05 12:00:01.000000,
-            @P5 nvarchar(max) = note 1,
-            @P6 varbinary(8000) = 0x0102,
-            @P7 decimaln(8,4) = 1235.5678,
-            @P8 decimaln(4,2) = 99.99,
-            @P9 bitn = true,
-            @P10 uniqueidentifier = 670DBD95-D6FB-4F2F-BD7B-97486DC7F6DB,
-            @P11 date = 2026-09-05,
-            @P12 time = 13:14:15.123456,
-            @P13 datetimeoffset = 2026-09-05 06:02:03.000000 -05:00,
-            @P14 intn(8) = 1099511627777,
-            @P15 nvarchar(max) = <r><a>1</a></r>
-statement   INSERT INTO dbo.readings (tag, value, quality, ts, note, blob, amount, price, flag, guid, d, t, dto, big, xmlcol) VALUES (@P1, @P2, ... @P15)
+1788649658.464937	CufcEX3NwEIkMYhrij	172.19.0.1	55276	172.19.0.2	1433	219043332097	dbo.usp_get_readings	-	F	@p1 nvarchar(8) = PUMP-01%,@p2 floatn(8) = 0,@p3 intn(8) output = NULL	-	-
 ```
 
-A query with one parameter, and a user-defined procedure with an output
-parameter (`output` marks parameters passed by reference):
+### tds_rpc.log: what they called
+
+Most application SQL never travels as a batch. Drivers parameterise it and
+ship it as a remote procedure call to `sp_executesql`, or prepare it with
+`sp_prepexec` and run it again by handle with `sp_execute`. Those procedures
+are addressed by number on the wire, which is why other decoders lose them.
+Here the analyzer resolves the number, renders every parameter as
+`@name type = value`, and lifts the SQL text out of the parameter that carries
+it into `statement`:
 
 ```
-procedure   sp_executesql
-parameters  @p1 nvarchar(max) = SELECT COUNT(*) FROM dbo.readings WHERE value > @P1,@p2 nvarchar(max) = @P1 FLOAT,@P1 floatn(8) = 20
-statement   SELECT COUNT(*) FROM dbo.readings WHERE value > @P1
-
-procedure   dbo.usp_get_readings
-parameters  @p1 nvarchar(max) = PUMP-00%,@p2 floatn(8) = 10,@p3 intn(4) output = 0
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	transaction_descriptor	procedure	proc_id	with_recompile	parameters	statement	handle
+#types	time	string	addr	port	addr	port	count	string	count	bool	vector[string]	string	string
+1788649652.343290	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	sp_executesql	10	F	@p1 nvarchar(max) = SELECT COUNT(*) FROM dbo.readings WHERE value > @P1,@p2 nvarchar(max) = @P1 FLOAT,@P1 floatn(8) = 20	SELECT COUNT(*) FROM dbo.readings WHERE value > @P1	-
+1788649652.349416	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	dbo.usp_get_readings	-	F	@p1 nvarchar(max) = PUMP-00%,@p2 floatn(8) = 10,@p3 intn(4) output = 0	-	-
 ```
 
-An older driver (2009 capture, TDS 7.1) preparing a statement with
-`sp_prepexec` and running it again with `sp_execute` by handle. Numbered
-procedures like these are the ones other decoders get wrong:
+The first line is a parameterised query: the statement, its parameter
+declaration, and the value 20 bound to `@P1`. The second is a call to a
+user-defined procedure with an `output` parameter, which is how the client
+gets a value back. Types are named the way SQL Server names them, with the
+wire's nullable variants: `intn(4)` is a nullable `int`, `floatn(8)` a
+nullable `float`.
+
+Earlier in the same session the client inserted sixty rows, each an
+`sp_executesql` with fifteen typed parameters. One of them, wrapped for
+reading, shows how every TDS data type is rendered as a value rather than as
+bytes:
 
 ```
-procedure   sp_prepexec
-proc_id     13
-parameters  @p1 intn(4) output = 0,@p2 nvarchar(4000) = @P0 nvarchar(4000),@P1 int,@p3 nvarchar(4000) = select * from test_table_1 where name = @P0 and id = @P1,@p4 nvarchar(4000) = zzz,@p5 intn(4) = 2
-statement   select * from test_table_1 where name = @P0 and id = @P1
-handle      0
-
-procedure   sp_execute
-proc_id     12
-parameters  @p1 intn(4) = 2
-handle      2
+@p1 nvarchar(max) = INSERT INTO dbo.readings (tag, value, quality, ts, note, blob, amount, price, flag, guid, d, t, dto, big, xmlcol) VALUES (@P1, @P2, ... @P15)
+@p2 nvarchar(max) = @P1 NVARCHAR(MAX),@P2 FLOAT,@P3 INT,@P4 DATETIME2(6),@P5 NVARCHAR(MAX),@P6 VARBINARY(8000),@P7 DECIMAL(8, 4),@P8 DECIMAL(4, 2),@P9 BIT,@P10 UNIQUEIDENTIFIER,@P11 DATE,@P12 TIME(6),@P13 DATETIMEOFFSET(6),@P14 BIGINT,@P15 NVARCHAR(MAX)
+@P1 nvarchar(max) = PUMP-001.FLOW
+@P2 floatn(8) = 13.5
+@P3 intn(4) = 192
+@P4 datetime2 = 2026-09-05 12:00:01.000000
+@P5 nvarchar(max) = note 1
+@P6 varbinary(8000) = 0x0102
+@P7 decimaln(8,4) = 1235.5678
+@P8 decimaln(4,2) = 99.99
+@P9 bitn = true
+@P10 uniqueidentifier = 670DBD95-D6FB-4F2F-BD7B-97486DC7F6DB
+@P11 date = 2026-09-05
+@P12 time = 13:14:15.123456
+@P13 datetimeoffset = 2026-09-05 06:02:03.000000 -05:00
+@P14 intn(8) = 1099511627777
+@P15 nvarchar(max) = <r><a>1</a></r>
 ```
 
-A historian's own procedures, with GUIDs, binary and integer parameters:
+The `handle` column ties prepared statements together. In a 2009 capture of
+an older driver, one connection prepares a statement with `sp_prepexec` (the
+handle comes back as the `output` parameter) and a later connection runs a
+prepared statement by handle with `sp_execute`:
 
 ```
-procedure   proc_GetMyExampleTableSampleMetaData
-parameters  @p1 uniqueidentifier = 00112233-4455-6677-8899-AABBCCDDEEFF,@p2 null = NULL,@p3 nvarchar(0) = ,@p4 varchar(36) = ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij,@p5 intn(4) = 1,@p6 intn(8) = 45,@p7 varbinary(12) = 0x0123456789ABCDEFFEDCBA98,@p8 intn(4) = 108
+1240877917.918653	C3U1hn4EKed9kvMRdg	10.111.111.111	1111	10.0.0.1	1433	0	sp_prepexec	13	F	@p1 intn(4) output = 0,@p2 nvarchar(4000) = @P0 nvarchar(4000)\x2c@P1 int,@p3 nvarchar(4000) = select * from test_table_1 where name = @P0 and id = @P1,@p4 nvarchar(4000) = zzz,@p5 intn(4) = 2	select * from test_table_1 where name = @P0 and id = @P1	0
+1259762401.711921	C06jqe4foQA3lhmMrk	10.111.111.111	5555	10.0.0.1	1433	0	sp_execute	12	F	@p1 intn(4) = 2	-	2
 ```
 
-| Field | Meaning |
-| --- | --- |
-| `procedure` | the name as sent, or `sp_executesql`, `sp_prepexec`, `sp_execute`, `sp_cursoropen` ... for calls made by number |
-| `proc_id` | that number, when the call used one |
-| `with_recompile` | the WITH RECOMPILE option flag |
-| `parameters` | `@name type = value`, one entry per parameter, in order; unnamed parameters are numbered `@p1`, `@p2` ...; `NULL` for nulls; binary as hex; `output` for by-reference parameters |
-| `statement` | the SQL text carried by `sp_executesql`, `sp_prepare`, `sp_prepexec`, `sp_prepexecrpc`, `sp_cursoropen`, `sp_cursorprepare` and `sp_cursorprepexec` |
-| `handle` | the prepared statement or cursor handle used by `sp_execute`, `sp_cursorfetch` and friends, or returned by `sp_prepexec` |
-| `transaction_descriptor` | the transaction the call runs in, 0 when none |
-
-Types are named the way SQL Server does, with the wire nullability variants
-(`intn(4)` is a nullable `int`, `floatn(8)` a nullable `float`, `bitn` a
-nullable `bit`) and declared lengths, precisions and scales.
-
-Hunting notes: `xp_cmdshell` and other extended procedures called as RPCs;
-`sp_executesql` with statements a legitimate application never builds;
-parameter values carrying SQL fragments; a `statement` that changes shape
-across calls from the same handle; a client that suddenly calls procedures a
-historian's UI never uses; `sp_password`, `sp_addsrvrolemember`,
-`sp_OACreate`.
-
-## tds_error.log
-
-One line per ERROR token the server sent. Class 11 and above are errors; the
-number identifies the condition.
+The same capture has a historian's own procedures, with GUIDs, binary and
+integers rendered in place:
 
 ```
-is_error  number  state  class  message                                    server_name  procedure  line
-T         208     1      16     Invalid object name 'dbo.does_not_exist'.  sqledge01    (empty)    1
-T         50000   1      16     custom failure 42                          sqledge01    (empty)    1
-T         18456   1      14     Login failed for user 'sa'.                sqledge01    (empty)    1
+1259762400.022561	Cx3zY52d3ABxWRNw0b	10.111.111.111	3333	10.0.0.1	1433	0	p_GetBogusData	-	F	@SearchType intn(1) = 1,@MaxWaitTimeInSeconds intn(4) = 0,@ProcessNegativeAck intn(1) = 0	-	-
 ```
 
-Some numbers to know: 18456 is a failed login (the state byte says why, 8 is
-a wrong password, 5 a missing login), 229 and 230 are permission denied, 208
-an unknown object (reconnaissance often trips it), 102 and 105 are syntax
-errors that follow injection attempts, 2812 a missing procedure, 15281 a
-blocked component such as `xp_cmdshell` being disabled, 15151 a login that
-cannot be altered.
+### tds_error.log: what went wrong
 
-With `redef TDS::log_info_messages = T;` the INFO tokens (class below 11)
-are logged too with `is_error F`: `PRINT` output, "Changed database context
-to ...", "Changed language setting to ...".
-
-## tds.log
-
-One line per TDS message in either direction, after reassembly across
-packets. It is the skeleton the other logs hang off, and the place to see
-sizes, message types, and what came back.
+Back in our session, the client asked for a table that does not exist and
+then raised an error of its own. The server's ERROR tokens are logged with
+their number, state, severity class and text, and their timestamps sit right
+after the batches that caused them in `tds_sql_batch.log`:
 
 ```
-ts                        is_orig  msg_type        len   packets  rows  row_count  errors
-2026-09-05T23:07:32+0000  T        prelogin        50    1        -     -          -
-2026-09-05T23:07:32+0000  F        tabular_result  35    1        0     0          0
-2026-09-05T23:07:32+0000  T        login7          248   1        -     -          -
-2026-09-05T23:07:32+0000  F        tabular_result  385   1        0     0          0
-2026-09-05T23:07:32+0000  T        sql_batch       916   1        -     -          -
-2026-09-05T23:07:32+0000  F        tabular_result  26    1        0     0          0
-2026-09-05T23:07:32+0000  T        rpc             1175  1        -     -          -
-2026-09-05T23:07:32+0000  F        tabular_result  31    1        0     1          0
-2026-09-05T23:07:32+0000  T        attention       0     1        -     -          -
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	is_error	number	state	class	message	server_name	procedure	line
+#types	time	string	addr	port	addr	port	bool	count	count	count	string	string	string	count
+1788649652.358791	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	208	1	16	Invalid object name 'dbo.does_not_exist'.	sqledge01	(empty)	1
+1788649652.359233	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	T	50000	1	16	custom failure 42	sqledge01	(empty)	1
 ```
 
-A `SELECT *` over a table with 60 rows comes back as a four-packet result,
-and a bulk load as a large multi-packet message:
+Error 208 is what reconnaissance trips when it guesses table names; 102 and
+105 are the syntax errors that follow injection attempts; 229 and 230 are
+permission denied; 15281 is a disabled component such as `xp_cmdshell`
+refusing to run. With `redef TDS::log_info_messages = T;` the informational
+messages (`PRINT` output, "Changed database context to ...") are logged as
+well, with `is_error` set to `F`.
+
+## When the login fails
+
+A second trace has the same client with a wrong password. The server answers
+the LOGIN7 with error 18456 instead of a LOGINACK, and `tds_login.log`
+records both the attempt and the outcome. The client fields are all there,
+because LOGIN7 was sent in the clear:
 
 ```
-F  tabular_result  12995  4  60  60  0
-T  bulk_load       12110  3  -   -   -
+1788649654.371906	CHoXq91qvuIN1IliUc	172.19.0.1	60578	172.19.0.2	1433	7.4	1.0.0.0	15.0.2000.0	not_supported	not_supported	F	MSSQLServer	F	workstation-01	sa	T	F	zeek-tds-badpw	127.0.0.1	Python TDS Library	-	master	-	35535	16777216	02:42:AC:11:00:02	F	T	F	F	-	-	-	-	F	18456	Login failed for user 'sa'.
 ```
 
-| Field | Meaning |
-| --- | --- |
-| `is_orig` | `T` for client to server |
-| `msg_type` | `prelogin`, `login7`, `sql_batch`, `rpc`, `tabular_result`, `attention`, `bulk_load`, `transaction_manager`, `sspi`, `fedauth_token`, `pre_tds7_login` |
-| `len`, `packets` | payload bytes and packets the message spanned |
-| `rows` | for results: rows returned in this message (ROW and NBCROW tokens) |
-| `row_count` | for results: rows affected as reported by DONE tokens with a count |
-| `errors` | for results: ERROR tokens in this message |
+and `tds_error.log` has the error itself:
 
-Hunting notes: large `tabular_result` messages with many `rows` from a host
-that normally reads a handful (exfiltration or a scraper), `bulk_load` where
-none is expected, `attention` storms (cancelled queries), and any `pre_tds7_login`,
-`sspi` or `fedauth_token` messages where the environment does not use them.
+```
+1788649654.385044	CHoXq91qvuIN1IliUc	172.19.0.1	60578	172.19.0.2	1433	T	18456	1	14	Login failed for user 'sa'.	sqledge01	(empty)	1
+```
+
+State 1 is what the server tells the client; the server's own log holds the
+real reason. A run of these from one source is a password spray.
+
+## When the session is encrypted
+
+Encryption is negotiated in PRELOGIN, and what happens next decides how much
+the analyzer sees. Most drivers default to encrypting only the login. Here is
+FreeTDS doing that. `conn.log` shows both services on the connection:
+
+```
+1788649658.440510	CufcEX3NwEIkMYhrij	172.19.0.1	55276	172.19.0.2	1433	tcp	tds,ssl	0.028913	3151	3247	SF
+```
+
+The TLS handshake travels inside PRELOGIN packets; the analyzer unwraps it and
+hands it to Zeek's SSL analyzer, which writes `ssl.log` for the same `uid`:
+
+```
+1788649658.444342	CufcEX3NwEIkMYhrij	172.19.0.1	55276	172.19.0.2	1433	TLSv12	TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256	x25519	-	F
+```
+
+LOGIN7 went through that tunnel, so the client's fields in `tds_login.log`
+are empty. But the server answered in the clear, so the product, the database
+and the outcome are still known, and `encrypted` is `T`:
+
+```
+1788649658.440812	CufcEX3NwEIkMYhrij	172.19.0.1	55276	172.19.0.2	1433	-	9.0.0.0	15.0.2000.0	off	off	T	MSSQLServer	F	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	Microsoft SQL Server	15.0.2000	7.4	zeektds	T	-	-
+```
+
+Everything after the login is plaintext again, so the batches and the
+procedure call shown earlier for this `uid` were all logged.
+
+When both sides insist on encryption, only the PRELOGIN exchange is visible.
+The analyzer forwards every later byte to the SSL analyzer, `tds_login.log`
+records the negotiation (`on`, `on`, `encrypted T`), `tds.log` stops after
+two lines, and the rest of the session is an `ssl.log` entry with the server
+name the client asked for:
+
+```
+1788650225.691314	CRYlNv4Pg52RR5gVll	172.19.0.1	61250	172.19.0.2	1433	-	1.0.0.0	15.0.2000.0	on	on	T	MSSQLServer	F	-	-	...
+1788650225.696889	CRYlNv4Pg52RR5gVll	172.19.0.1	61250	172.19.0.2	1433	TLSv12	TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256	x25519	127.0.0.1	F
+```
+
+That is the honest limit of passive monitoring, and it is why the plaintext
+decoding matters most on the legacy and control-system networks where
+encryption is still the exception.
+
+## How the logs connect
+
+- **`uid`** is on every line of every log, and on `conn.log` and `ssl.log`.
+  It is the join key.
+- **`ts`** orders requests and responses within a session; an error's
+  timestamp follows the batch or call that provoked it, and `tds.log` shows
+  the response size and row counts for each request.
+- **`transaction_descriptor`** ties `tds_sql_batch.log` and `tds_rpc.log`
+  lines to the transaction they ran in, across both logs.
+- **`handle`** ties an `sp_execute` or cursor fetch back to the `sp_prepexec`
+  or `sp_cursoropen` that created the handle.
+- **`is_orig`** in `tds.log` separates the client's messages from the
+  server's; the other logs are one-sided by nature (requests in
+  `tds_sql_batch` and `tds_rpc`, responses in `tds_error`).
+
+## JSON
+
+Sites that ship logs to Elasticsearch or Splunk usually run Zeek with
+`LogAscii::use_json=T`. The same lines then look like this:
+
+```json
+{"ts":1788649654.385044,"uid":"CHoXq91qvuIN1IliUc","id.orig_h":"172.19.0.1","id.orig_p":60578,"id.resp_h":"172.19.0.2","id.resp_p":1433,"is_error":true,"number":18456,"state":1,"class":14,"message":"Login failed for user 'sa'.","server_name":"sqledge01","procedure":"","line":1}
+```
+
+## What to hunt for
+
+- In `tds_login.log`: accounts, applications and driver libraries that are
+  new for a given server; `sa` and other shared logins from workstations;
+  `hostname` that does not match DNS; `encrypted F` where policy requires
+  encryption; runs of `success F`.
+- In `tds_sql_batch.log`: `xp_cmdshell`, `sp_configure`, `OPENROWSET`,
+  `BULK INSERT`, `sp_addlogin`, `ALTER LOGIN`, `sp_OACreate`, `xp_dirtree`,
+  `WAITFOR DELAY`, `DROP` and `TRUNCATE` against historian tables, and any
+  plain SQL from a host that only ever calls procedures.
+- In `tds_rpc.log`: extended procedures called as RPCs, `sp_executesql`
+  statements an application never builds, parameter values that contain SQL,
+  a `statement` that changes shape across calls, procedures a historian's own
+  clients never use.
+- In `tds_error.log`: 18456 sprays, bursts of 208 and 229, syntax errors that
+  follow injection attempts.
+- In `tds.log`: results far larger than a host's baseline, unexpected
+  `bulk_load`, storms of `attention`.
+
+## Field reference
+
+Every log begins with `ts`, `uid`, `id.orig_h`, `id.orig_p`, `id.resp_h`,
+`id.resp_p`.
+
+**tds_login.log**: `tds_version` (client's LOGIN7), `client_version` and
+`server_version` (PRELOGIN driver and server versions), `client_encryption`,
+`server_encryption` (`off`, `on`, `not_supported`, `required`), `encrypted`,
+`instance`, `mars`, `hostname`, `username`, `has_password`,
+`integrated_auth`, `app_name`, `server_name` (the name the client connected
+to), `library`, `language`, `database`, `attach_db`, `client_pid`,
+`client_prog_ver`, `client_mac`, `read_only_intent`, `odbc`, `oledb`,
+`change_password`, `server_product`, `server_product_version`,
+`server_tds_version`, `initial_database`, `success`, `error_number`,
+`error_message`.
+
+**tds_sql_batch.log**: `transaction_descriptor`, `query`.
+
+**tds_rpc.log**: `transaction_descriptor`, `procedure`, `proc_id`,
+`with_recompile`, `parameters` (vector of `@name type = value`, `output` for
+by-reference parameters, `NULL` for nulls, hex for binary), `statement`,
+`handle`.
+
+**tds_error.log**: `is_error`, `number`, `state`, `class`, `message`,
+`server_name`, `procedure`, `line`.
+
+**tds.log**: `is_orig`, `msg_type` (`prelogin`, `login7`, `sql_batch`,
+`rpc`, `tabular_result`, `attention`, `bulk_load`, `transaction_manager`,
+`sspi`, `fedauth_token`, `pre_tds7_login`), `len`, `packets`, `rows`,
+`row_count`, `errors`.
 
 ## Installation
 
@@ -385,17 +411,14 @@ keep the stream aligned, row counts are logged), FEATUREEXTACK.
 
 Not decoded: the contents of bulk-load rows and SSPI blobs (logged as messages
 only); result row values; TDS 8.0 (TLS from the first byte, which the SSL
-analyzer sees on its own); pre-TDS7 Sybase-style logins. When the client and
-server agree on encryption, only PRELOGIN is visible; with the common
-"encrypt login only" setting, everything except LOGIN7 is.
+analyzer sees on its own); pre-TDS7 Sybase-style logins.
 
 TDS 7.1 and 7.2+ differ in a few token layouts. The analyzer learns the
 version from LOGIN7 or LOGINACK and, when it joins a connection mid-stream,
-infers it from whether requests carry ALL_HEADERS.
-
-A message body the analyzer cannot parse does not take down the connection:
-it is reported as a `tds_message_parse_error` weird with the reason, and the
-next message is parsed normally.
+infers it from whether requests carry ALL_HEADERS. A message body it cannot
+parse does not take down the connection: it becomes a
+`tds_message_parse_error` weird with the reason, and the next message is
+parsed normally.
 
 ## Development
 
