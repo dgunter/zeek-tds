@@ -257,8 +257,8 @@ sample rows:
 ```
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	columns	types	rows	sample
 #types	time	string	addr	port	addr	port	vector[string]	vector[string]	count	vector[string]
-1788649652.338220	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	id,tag,value,quality,ts,note,blob,amount,price,flag,guid,d,t,dto,big,xmlcol	int,nvarchar(64),floatn(8),intn(1),datetime2,varchar(200),varbinary(max),decimaln(12\x2c4),moneyn(8),bitn,uniqueidentifier,date,time,datetimeoffset,intn(8),xml	60	1|PUMP-000.FLOW|NULL|NULL|2026-09-05 12:00:00.000|NULL|0x01|1234.5678|99.9900|false|...
-1788649652.349xxx	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	id,tag,value	int,nvarchar(64),floatn(8)	5	10|PUMP-009.FLOW|21.5,9|PUMP-008.FLOW|20.5,8|PUMP-007.FLOW|NULL
+1788649652.338220	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	id,tag,value,quality,ts,note,blob,amount,price,flag,guid,d,t,dto,big,xmlcol	int,nvarchar(64),floatn(8),intn(1),datetime2,varchar(200),varbinary(max),decimaln(12\x2c4),moneyn(8),bitn,uniqueidentifier,date,time,datetimeoffset,intn(8),xml	60	1|PUMP-000.FLOW|NULL|NULL|2026-09-05 12:00:00.000|NULL|0x01|1234.5678|99.9900|false|09BBB7AA-CE65-4CCF-803A-D2CE6C5C7FF5|2026-09-05|13:14:15.1234560|2026-09-05 06:02:03.00 -05:00|1099511627776|<r><a>1</a></r>,2|PUMP-001.FLOW|13.5|-64|2026-09-05 12:00:01.000|note 1|0x0102|1235.5678|99.9900|true|670DBD95-D6FB-4F2F-BD7B-97486DC7F6DB|2026-09-05|13:14:15.1234560|2026-09-05 06:02:03.00 -05:00|1099511627777|<r><a>1</a></r>,3|PUMP-002.FLOW|14.5|-64|2026-09-05 12:00:02.000|note 2|0x010203|1236.5678|99.9900|false|F213C6E0-7DB2-4E72-9342-6D18C2A8E77F|2026-09-05|13:14:15.1234560|2026-09-05 06:02:03.00 -05:00|1099511627778|<r><a>1</a></r>
+1788649652.353981	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	id,tag,value	int,nvarchar(64),floatn(8)	5	10|PUMP-009.FLOW|21.5,9|PUMP-008.FLOW|20.5,8|PUMP-007.FLOW|NULL
 ```
 
 ## When the login fails
