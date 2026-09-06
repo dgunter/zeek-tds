@@ -413,6 +413,9 @@ type Login7 = unit(ctx: Context&) {
     var change_password: bool = False;
     var client_mac: string = "";
     var sspi: bytes = b"";
+    var features: string = "";
+    var user_agent: string = "";
+    var fedauth_library: string = "";
 
     length: uint32;
     tds_version: uint32 {
@@ -466,11 +469,62 @@ type Login7 = unit(ctx: Context&) {
         }
         self.change_password = (self.option_flags3 & 0x01) != 0;
         self.client_mac = spicy::bytes_to_mac(self.client_id);
+
+        # fExtension: ibExtension points at a DWORD offset of the FeatureExt block.
+        if ( (self.option_flags3 & 0x10) != 0 && self.ol_unused.length >= 4 && self.ol_unused.offset >= base ) {
+            local ext: uint64 = self.ol_unused.offset - base;
+            if ( ext + 4 <= |self.data| ) {
+                local fe: uint64 = self.data.sub(ext, ext + 4).to_uint(spicy::ByteOrder::Little);
+                if ( fe >= base )
+                    parse_features(self, fe - base);
+            }
+        }
     }
+
+
 
 };
 
+const FEATURE_NAMES: map<uint8, string> = map(
+    0x01: "session_recovery", 0x02: "fedauth", 0x04: "column_encryption",
+    0x05: "global_transactions", 0x08: "azure_sql_support", 0x09: "data_classification",
+    0x0A: "utf8", 0x0B: "azure_sql_dns_caching", 0x0D: "json", 0x0E: "vector",
+    0x0F: "enhanced_routing", 0x10: "user_agent"
+);
+const FEDAUTH_LIBRARIES: map<uint64, string> = map(0: "live_id_compact", 1: "security_token", 2: "adal");
+
 # A UCS-2 string addressed by a LOGIN7 offset/length pair (length in characters).
+# FeatureExt block ([MS-TDS] 2.2.6.4): FeatureId, DWORD length, data, ... , 0xFF.
+function parse_features(inout l: Login7, start: uint64) {
+    local pos: uint64 = start;
+    local names: string = "";
+    while ( pos + 1 <= |l.data| ) {
+        local id: uint8 = cast<uint8>(l.data.sub(pos, pos + 1).to_uint(spicy::ByteOrder::Big));
+        if ( id == 0xFF )
+            break;
+        if ( pos + 5 > |l.data| )
+            break;
+        local n: uint64 = l.data.sub(pos + 1, pos + 5).to_uint(spicy::ByteOrder::Little);
+        local vstart: uint64 = pos + 5;
+        local vend: uint64 = vstart + n;
+        if ( vend > |l.data| )
+            break;
+        local v = l.data.sub(vstart, vend);
+        names = names + (|names| > 0 ? "," : "") + (id in FEATURE_NAMES ? FEATURE_NAMES[id] : "0x%02x" % id);
+        if ( id == FEATURE_USERAGENT && |v| >= 2 ) {
+            local chars: uint64 = v.sub(0, 2).to_uint(spicy::ByteOrder::Little);
+            if ( 2 + chars * 2 <= |v| )
+                l.user_agent = v.sub(2, 2 + chars * 2).decode(spicy::Charset::UTF16LE);
+        }
+        else if ( id == FEATURE_FEDAUTH && |v| >= 1 ) {
+            local lib: uint64 = v.sub(0, 1).to_uint(spicy::ByteOrder::Big) >> 1;
+            l.fedauth_library = lib in FEDAUTH_LIBRARIES ? FEDAUTH_LIBRARIES[lib] : "0x%02x" % lib;
+        }
+        pos = vend;
+    }
+    l.features = names;
+}
+
 function login_str(data: bytes, ol: OffsetLength, base: uint64) : string {
     if ( ol.length == 0 || ol.offset < base )
         return "";
@@ -991,9 +1045,28 @@ type ColMetaData = unit(ctx: Context&) {
 
 type RowState = struct {
     columns: vector<TypeInfo>;
+    names: vector<string>;
     index: uint64;
     bitmap: bytes;
+    # Rows seen in the current result set; only the first few are rendered.
+    rows: uint64;
 };
+
+# Rows rendered per result set for tds_result.log sampling.
+const MAX_SAMPLE_ROWS: uint64 = 10;
+
+function render_cells(st: RowState&, cells: vector<Cell>) : vector<string> {
+    local out: vector<string>;
+    local i: uint64 = 0;
+    for ( c in cells ) {
+        if ( c?.value )
+            out.push_back(render_value(st.columns[i], c.value));
+        else
+            out.push_back("NULL");
+        i += 1;
+    }
+    return out;
+}
 
 function column_is_null(st: RowState&, i: uint64) : bool {
     if ( |st.bitmap| == 0 )
@@ -1009,17 +1082,35 @@ type Cell = unit(st: RowState&) {
     value: TypedValue(st.columns[self.i], True) if ( ! column_is_null(st, self.i) );
 };
 
-type Row = unit(columns: vector<TypeInfo>) {
+type Row = unit(columns: vector<TypeInfo>, rs: RowState&) {
     var st: RowState& = new RowState;
+    var sample: bool = False;
+    var values: vector<string>;
     on %init { self.st.columns = columns; self.st.index = 0; self.st.bitmap = b""; }
     cells: Cell(self.st)[] &count=|columns|;
+    on %done {
+        rs.rows += 1;
+        if ( rs.rows <= MAX_SAMPLE_ROWS ) {
+            self.sample = True;
+            self.values = render_cells(self.st, self.cells);
+        }
+    }
 };
 
-type NBCRow = unit(columns: vector<TypeInfo>) {
+type NBCRow = unit(columns: vector<TypeInfo>, rs: RowState&) {
     var st: RowState& = new RowState;
+    var sample: bool = False;
+    var values: vector<string>;
     on %init { self.st.columns = columns; self.st.index = 0; }
     bitmap: bytes &size=(|columns| + 7) / 8 { self.st.bitmap = $$; }
     cells: Cell(self.st)[] &count=|columns|;
+    on %done {
+        rs.rows += 1;
+        if ( rs.rows <= MAX_SAMPLE_ROWS ) {
+            self.sample = True;
+            self.values = render_cells(self.st, self.cells);
+        }
+    }
 };
 
 type LoginAck = unit {
@@ -1071,6 +1162,20 @@ type EnvChange = unit {
             self.new_value = "0x" + spicy::bytes_to_hexstring(self.body);
     }
 };
+
+public function column_types(cmd: ColMetaData) : vector<string> {
+    local out: vector<string>;
+    for ( c in cmd.columns )
+        out.push_back(type_name(c.type_info));
+    return out;
+}
+
+public function column_names(cmd: ColMetaData) : vector<string> {
+    local out: vector<string>;
+    for ( c in cmd.columns )
+        out.push_back(c.name.text);
+    return out;
+}
 
 # ERROR and INFO tokens share a layout.
 type ErrorInfo = unit {
@@ -1209,11 +1314,15 @@ type Token = unit(st: RowState&, ctx: Context&) {
         TOKEN_RETURNVALUE -> return_value: ReturnValue(ctx);
         TOKEN_COLMETADATA -> col_meta_data: ColMetaData(ctx) {
             st.columns = vector<TypeInfo>();
-            for ( c in $$.columns )
+            st.names = vector<string>();
+            st.rows = 0;
+            for ( c in $$.columns ) {
                 st.columns.push_back(c.type_info);
+                st.names.push_back(c.name.text);
+            }
         }
-        TOKEN_ROW -> row: Row(st.columns);
-        TOKEN_NBCROW -> nbc_row: NBCRow(st.columns);
+        TOKEN_ROW -> row: Row(st.columns, st);
+        TOKEN_NBCROW -> nbc_row: NBCRow(st.columns, st);
         TOKEN_SSPI -> sspi: SSPIToken;
         TOKEN_ORDER, TOKEN_TABNAME, TOKEN_COLINFO -> skipped: SkippedToken;
         TOKEN_FEDAUTHINFO, TOKEN_SESSIONSTATE -> skipped_long: SkippedLongToken;

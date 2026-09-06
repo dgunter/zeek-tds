@@ -12,7 +12,7 @@
 module TDS;
 
 export {
-	redef enum Log::ID += { LOG, LOGIN_LOG, SQL_BATCH_LOG, RPC_LOG, ERROR_LOG };
+	redef enum Log::ID += { LOG, LOGIN_LOG, SQL_BATCH_LOG, RPC_LOG, ERROR_LOG, RESULT_LOG };
 
 	## Ports TDS is registered on, in addition to detection by signature.
 	const ports = { 1433/tcp } &redef;
@@ -28,6 +28,13 @@ export {
 	const log_errors = T &redef;
 	## Include the rendered parameter list in tds_rpc.log (the widest column there).
 	const log_rpc_parameters = T &redef;
+
+	## tds_result.log: one line per result set with column names and types. Off by
+	## default: it is as loud as the queries and it describes the data coming back.
+	const log_results = F &redef;
+	## With tds_result.log on, also record the first N rows rendered by type (0-10).
+	## Result content is sensitive; leave at 0 unless the site wants it.
+	const result_sample_rows = 0 &redef;
 
 	## How tds.log records messages. PER_MESSAGE writes one line per TDS message;
 	## SUMMARY writes one line per connection per :zeek:see:`TDS::summary_interval`
@@ -125,6 +132,9 @@ export {
 		username: string &log &optional;
 		## A password was supplied (SQL authentication).
 		has_password: bool &log &optional;
+		## A password was sent in a LOGIN7 that was not protected by TLS. TDS only
+		## obfuscates the password (nibble swap and XOR 0xA5), which is trivially reversed.
+		password_in_clear: bool &log &default=F;
 		## Integrated (Windows) authentication requested.
 		integrated_auth: bool &log &optional;
 		## Security package of the integrated authentication exchange: ntlm or gssapi
@@ -145,6 +155,15 @@ export {
 		odbc: bool &log &optional;
 		oledb: bool &log &optional;
 		change_password: bool &log &optional;
+		## TDS 7.4 feature extensions the client asked for (session_recovery, fedauth,
+		## column_encryption, utf8, user_agent ...).
+		features: string &log &optional;
+		## Client user agent string, when the driver sends one (TDS 7.4 USERAGENT feature).
+		user_agent: string &log &optional;
+		## Federated authentication library (Azure AD / Entra): live_id_compact, security_token, adal.
+		fedauth_library: string &log &optional;
+		## Server redirected the client elsewhere (ENVCHANGE routing): host:port.
+		routed_to: string &log &optional;
 		## From the server's LOGINACK.
 		server_product: string &log &optional;
 		server_product_version: string &log &optional;
@@ -181,6 +200,25 @@ export {
 		statement: string &log &optional;
 		## Prepared statement or cursor handle when the procedure uses one.
 		handle: string &log &optional;
+		## Output parameter values returned by the server, as ``@name type = value``.
+		output: vector of string &log &optional;
+		## The procedure's return status.
+		return_status: int &log &optional;
+	};
+
+	type ResultInfo: record {
+		ts: time &log;
+		uid: string &log;
+		id: conn_id &log;
+		## Column names of the result set.
+		columns: vector of string &log;
+		## Column types.
+		types: vector of string &log;
+		## Rows in the result set.
+		rows: count &log &default=0;
+		## The first rows, each as ``|``-separated rendered values, when
+		## TDS::result_sample_rows is set.
+		sample: vector of string &log &optional;
 	};
 
 	type ErrorInfo: record {
@@ -213,6 +251,10 @@ export {
 		## The connection uses MARS session multiplexing.
 		mars: bool &default=F;
 		login_logged: bool &default=F;
+		## RPCs whose response has not arrived yet: output values attach to them.
+		pending_rpc: vector of RPCInfo;
+		## Result set being described.
+		result: ResultInfo &optional;
 		## SUMMARY mode accumulator for tds.log.
 		summary: Info &optional;
 		summary_types: table[string] of count &optional;
@@ -223,12 +265,14 @@ export {
 	global log_tds_sql_batch: event(rec: SQLBatchInfo);
 	global log_tds_rpc: event(rec: RPCInfo);
 	global log_tds_error: event(rec: ErrorInfo);
+	global log_tds_result: event(rec: ResultInfo);
 
 	global log_policy: Log::PolicyHook;
 	global log_policy_login: Log::PolicyHook;
 	global log_policy_sql_batch: Log::PolicyHook;
 	global log_policy_rpc: Log::PolicyHook;
 	global log_policy_error: Log::PolicyHook;
+	global log_policy_result: Log::PolicyHook;
 
 	global finalize_tds: Conn::RemovalHook;
 }
@@ -246,6 +290,7 @@ event zeek_init() &priority=5
 	Log::create_stream(SQL_BATCH_LOG, [$columns=SQLBatchInfo, $ev=log_tds_sql_batch, $path="tds_sql_batch", $policy=log_policy_sql_batch]);
 	Log::create_stream(RPC_LOG, [$columns=RPCInfo, $ev=log_tds_rpc, $path="tds_rpc", $policy=log_policy_rpc]);
 	Log::create_stream(ERROR_LOG, [$columns=ErrorInfo, $ev=log_tds_error, $path="tds_error", $policy=log_policy_error]);
+	Log::create_stream(RESULT_LOG, [$columns=ResultInfo, $ev=log_tds_result, $path="tds_result", $policy=log_policy_result]);
 
 	Analyzer::register_for_ports(Analyzer::ANALYZER_TDS, ports);
 	}
@@ -262,7 +307,7 @@ hook set_session(c: connection)
 	if ( c?$tds )
 		return;
 
-	c$tds = State($login=LoginInfo($ts=network_time(), $uid=c$uid, $id=c$id), $rpc=vector());
+	c$tds = State($login=LoginInfo($ts=network_time(), $uid=c$uid, $id=c$id), $rpc=vector(), $pending_rpc=vector());
 	Conn::register_removal_hook(c, finalize_tds);
 	}
 
@@ -411,10 +456,20 @@ event TDS::login7(c: connection, tds_version: string, packet_size: count, client
                   client_pid: count, flags1: count, flags2: count, type_flags: count, flags3: count,
                   hostname: string, username: string, has_password: bool, app_name: string,
                   server_name: string, library: string, language: string, database: string,
-                  attach_db: string, has_sspi: bool, change_password: bool, client_mac: string)
+                  attach_db: string, has_sspi: bool, change_password: bool, client_mac: string,
+                  features: string, user_agent: string, fedauth_library: string)
 	{
 	hook set_session(c);
 	local l = c$tds$login;
+
+	# We only see LOGIN7 when it was not inside TLS.
+	l$password_in_clear = has_password;
+	if ( features != "" )
+		l$features = features;
+	if ( user_agent != "" )
+		l$user_agent = user_agent;
+	if ( fedauth_library != "" )
+		l$fedauth_library = fedauth_library;
 
 	l$ts = network_time();
 	l$tds_version = tds_version;
@@ -457,6 +512,8 @@ event TDS::env_change(c: connection, typ: count, new_value: string, old_value: s
 	hook set_session(c);
 	if ( typ == 1 && ! c$tds$login?$initial_database )
 		c$tds$login$initial_database = new_value;
+	if ( typ == 20 )
+		c$tds$login$routed_to = new_value;
 	}
 
 event TDS::error_info(c: connection, is_error: bool, number: count, state: count, class: count,
@@ -537,28 +594,114 @@ event TDS::rpc_parameter(c: connection, name: string, status: count, typ: string
 		r$handle = rendered;
 	}
 
+function flush_rpcs(c: connection)
+	{
+	for ( i in c$tds$pending_rpc )
+		{
+		if ( ! log_rpc_parameters )
+			c$tds$pending_rpc[i]$parameters = vector();
+		if ( log_rpcs )
+			Log::write(RPC_LOG, c$tds$pending_rpc[i]);
+		}
+	c$tds$pending_rpc = vector();
+	}
+
+# The request is complete: hold the calls until the server's response has delivered
+# return status and output parameter values, or until the next request.
 event TDS::rpc_request(c: connection, transaction_descriptor: count) &priority=-5
 	{
 	hook set_session(c);
+	flush_rpcs(c);
 	for ( i in c$tds$rpc )
 		{
 		c$tds$rpc[i]$transaction_descriptor = transaction_descriptor;
-		if ( ! log_rpc_parameters )
-			c$tds$rpc[i]$parameters = vector();
-		if ( log_rpcs )
-			Log::write(RPC_LOG, c$tds$rpc[i]);
+		c$tds$pending_rpc += c$tds$rpc[i];
 		}
 	c$tds$rpc = vector();
 	}
 
+event TDS::return_status(c: connection, value: int)
+	{
+	hook set_session(c);
+	if ( |c$tds$pending_rpc| > 0 )
+		c$tds$pending_rpc[|c$tds$pending_rpc| - 1]$return_status = value;
+	}
+
 event TDS::return_value(c: connection, name: string, typ: string, value: string)
 	{
+	hook set_session(c);
+	if ( |c$tds$pending_rpc| == 0 )
+		return;
+	local r = c$tds$pending_rpc[|c$tds$pending_rpc| - 1];
+	if ( ! r?$output )
+		r$output = vector();
+	r$output += fmt("%s %s = %s", name == "" ? fmt("@out%d", |r$output| + 1) : name, typ, truncate(value));
+	}
+
+# Result sets: columns arrive first, rows follow, a DONE with a count closes the set.
+function flush_result(c: connection)
+	{
+	if ( ! c$tds?$result )
+		return;
+	if ( log_results )
+		Log::write(RESULT_LOG, c$tds$result);
+	delete c$tds$result;
+	}
+
+event TDS::result_columns(c: connection, names: vector of string, types: vector of string)
+	{
+	hook set_session(c);
+	flush_result(c);
+	if ( ! log_results )
+		return;
+	c$tds$result = ResultInfo($ts=network_time(), $uid=c$uid, $id=c$id, $columns=names, $types=types);
+	}
+
+event TDS::result_row(c: connection, values: vector of string)
+	{
+	if ( ! c?$tds || ! c$tds?$result || result_sample_rows == 0 )
+		return;
+	if ( ! c$tds$result?$sample )
+		c$tds$result$sample = vector();
+	if ( |c$tds$result$sample| < result_sample_rows )
+		{
+		local rendered: vector of string = vector();
+		for ( i in values )
+			rendered += truncate(values[i]);
+		c$tds$result$sample += join_string_vec(rendered, "|");
+		}
+	}
+
+event TDS::done(c: connection, typ: count, status: count, cur_cmd: count, row_count: count)
+	{
+	if ( ! c?$tds || ! c$tds?$result )
+		return;
+	# DONE_COUNT (0x10) closes the result set that preceded it.
+	if ( (status & 0x10) != 0 )
+		{
+		c$tds$result$rows = row_count;
+		flush_result(c);
+		}
+	}
+
+# A server response is complete: log the RPCs it answered and any open result set.
+event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count, packets: count, sid: count) &priority=-10
+	{
+	if ( ! c?$tds )
+		return;
+	if ( ! is_orig && msg_type == 4 )
+		{
+		flush_result(c);
+		flush_rpcs(c);
+		}
 	}
 
 hook finalize_tds(c: connection)
 	{
 	emit_login(c);
 	flush_summary(c);
+	flush_rpcs(c);
+	flush_result(c);
 	}
 
 # Log the login as soon as the server has answered it, so long-lived sessions

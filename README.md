@@ -5,7 +5,8 @@ protocol every client uses to talk to Microsoft SQL Server, written in
 [Spicy](https://docs.zeek.org/projects/spicy). It watches port 1433 (or any
 port it recognises TDS on) and writes five logs that between them answer the
 questions a hunter asks of a database: who connected, from what, as whom, what
-they ran, what they called, what broke, and how much came back.
+they ran, what they called, what broke, and how much came back. A sixth,
+opt-in log describes what came back.
 
 ## The problem it solves
 
@@ -64,7 +65,9 @@ carries as its client id, which is often the only hardware identifier a
 database ever sees.
 
 That is already most of a hunt. An `app_name` nobody recognises, `sa` from a
-workstation, a `hostname` that disagrees with DNS for `id.orig_h`, or a driver
+workstation, `password_in_clear` set (the LOGIN7 travelled outside TLS, and
+TDS's password obfuscation is a nibble swap and an XOR that anyone on the
+wire can undo), a `hostname` that disagrees with DNS for `id.orig_h`, or a driver
 that no sanctioned application uses all stand out on this one line.
 
 ### tds.log: the rhythm of the conversation
@@ -162,7 +165,17 @@ it into `statement`:
 The first line is a parameterised query: the statement, its parameter
 declaration, and the value 20 bound to `@P1`. The second is a call to a
 user-defined procedure with an `output` parameter, which is how the client
-gets a value back. Types are named the way SQL Server names them, with the
+gets a value back. The line is written when the server's response has
+arrived, so it also carries what came back: the `output` column holds the
+output parameter values the server returned and `return_status` the
+procedure's return code. For the same procedure called from a .NET client:
+
+```
+procedure      dbo.usp_get_readings
+parameters     @tag nvarchar(8) = PUMP-00%,@min floatn(8) = 15,@count intn(4) output = NULL
+output         @count intn(4) = 6
+return_status  7
+``` Types are named the way SQL Server names them, with the
 wire's nullable variants: `intn(4)` is a nullable `int`, `floatn(8)` a
 nullable `float`.
 
@@ -228,6 +241,25 @@ permission denied; 15281 is a disabled component such as `xp_cmdshell`
 refusing to run. With `redef TDS::log_info_messages = T;` the informational
 messages (`PRINT` output, "Changed database context to ...") are logged as
 well, with `is_error` set to `F`.
+
+### tds_result.log: what came back
+
+The five logs above are about requests. Results are parsed too, to keep the
+token stream aligned and to count rows, and with `redef TDS::log_results = T;`
+they get a log of their own: one line per result set with the column names
+and types and the row count. That alone tells you which tables and columns a
+host reads, without storing the data. With `TDS::result_sample_rows` set, the
+first rows are recorded as well, rendered by type and separated by `|`. Both
+are off by default because result content is the sensitive part of database
+traffic and the volume matches the queries. From our session, with three
+sample rows:
+
+```
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	columns	types	rows	sample
+#types	time	string	addr	port	addr	port	vector[string]	vector[string]	count	vector[string]
+1788649652.338220	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	id,tag,value,quality,ts,note,blob,amount,price,flag,guid,d,t,dto,big,xmlcol	int,nvarchar(64),floatn(8),intn(1),datetime2,varchar(200),varbinary(max),decimaln(12\x2c4),moneyn(8),bitn,uniqueidentifier,date,time,datetimeoffset,intn(8),xml	60	1|PUMP-000.FLOW|NULL|NULL|2026-09-05 12:00:00.000|NULL|0x01|1234.5678|99.9900|false|...
+1788649652.349xxx	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	id,tag,value	int,nvarchar(64),floatn(8)	5	10|PUMP-009.FLOW|21.5,9|PUMP-008.FLOW|20.5,8|PUMP-007.FLOW|NULL
+```
 
 ## When the login fails
 
@@ -368,7 +400,8 @@ Every log begins with `ts`, `uid`, `id.orig_h`, `id.orig_p`, `id.resp_h`,
 `instance`, `mars`, `hostname`, `username`, `has_password`,
 `integrated_auth`, `app_name`, `server_name` (the name the client connected
 to), `library`, `language`, `database`, `attach_db`, `client_pid`,
-`client_prog_ver`, `client_mac`, `sspi_mechanism`, `read_only_intent`, `odbc`, `oledb`,
+`client_prog_ver`, `client_mac`, `password_in_clear`, `sspi_mechanism`, `read_only_intent`, `odbc`, `oledb`,
+`features`, `user_agent`, `fedauth_library`, `routed_to`,
 `change_password`, `server_product`, `server_product_version`,
 `server_tds_version`, `initial_database`, `success`, `error_number`,
 `error_message`.
@@ -378,7 +411,9 @@ to), `library`, `language`, `database`, `attach_db`, `client_pid`,
 **tds_rpc.log**: `transaction_descriptor`, `procedure`, `proc_id`,
 `with_recompile`, `parameters` (vector of `@name type = value`, `output` for
 by-reference parameters, `NULL` for nulls, hex for binary), `statement`,
-`handle`.
+`handle`, `output` (values returned for output parameters), `return_status`.
+
+**tds_result.log** (opt-in): `columns`, `types`, `rows`, `sample`.
 
 **tds_error.log**: `is_error`, `number`, `state`, `class`, `message`,
 `server_name`, `procedure`, `line`.
@@ -440,6 +475,10 @@ redef TDS::log_errors = T;
 # Also log INFO messages (severity below 11) to tds_error.log.
 redef TDS::log_info_messages = T;
 
+# Result sets: off by default. Columns and row counts only, or with sample rows.
+redef TDS::log_results = T;
+redef TDS::result_sample_rows = 3;   # 0-10
+
 # Statements and values are truncated at 1024 bytes; raise or set to 0 for no limit.
 # Zeek caps each log field at Log::default_max_field_string_bytes (4096).
 redef TDS::max_text = 8192;
@@ -458,11 +497,12 @@ partially-length-prefixed type, rendered by type (integers, decimals, money,
 floats, strings, binary, GUIDs, all date and time types); transaction manager
 requests; the server token stream: LOGINACK, ENVCHANGE, ERROR, INFO, DONE,
 RETURNSTATUS, RETURNVALUE, COLMETADATA including Always Encrypted key tables
-and crypto metadata, ROW and NBCROW (values are parsed to keep the stream
-aligned, row counts are logged), FEATUREEXTACK, SSPI. Integrated
+and crypto metadata, ROW and NBCROW (rendered into tds_result.log when
+enabled), FEATUREEXTACK, SSPI, ENVCHANGE routing; LOGIN7 feature extensions
+including the client user agent and federated authentication library. Integrated
 authentication tokens are handed to Zeek's NTLM and GSSAPI analyzers.
 
-Not decoded: the contents of bulk-load rows; result row values; TDS 8.0 (TLS from the first byte, which the SSL
+Not decoded: the contents of bulk-load rows; TDS 8.0 (TLS from the first byte, which the SSL
 analyzer sees on its own); pre-TDS7 Sybase-style logins.
 
 TDS 7.1 and 7.2+ differ in a few token layouts. The analyzer learns the

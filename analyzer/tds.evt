@@ -24,7 +24,7 @@ on TDS::Login7 -> event TDS::login7($conn, TDS::tds_version_name(self.tds_versio
     self.client_prog_ver, self.client_pid, self.option_flags1, self.option_flags2, self.type_flags,
     self.option_flags3, self.hostname, self.username, self.has_password, self.app_name,
     self.server_name, self.library, self.language, self.database, self.attach_db, self.has_sspi,
-    self.change_password, self.client_mac);
+    self.change_password, self.client_mac, self.features, self.user_agent, self.fedauth_library);
 
 on TDS::SQLBatch -> event TDS::sql_batch($conn, self.transaction_descriptor, self.query);
 
@@ -47,7 +47,9 @@ on TDS::Token if ( self?.info ) -> event TDS::error_info($conn, False, self.info
 on TDS::Token if ( self?.done ) -> event TDS::done($conn, self.typ, self.done.status, self.done.cur_cmd, TDS::done_rows(self.done));
 on TDS::Token if ( self?.return_status ) -> event TDS::return_status($conn, self.return_status);
 on TDS::ReturnValue -> event TDS::return_value($conn, self.name.text, TDS::type_name(self.type_info), self.rendered);
-on TDS::Column -> event TDS::column($conn, self.name.text, TDS::type_name(self.type_info));
+on TDS::ColMetaData -> event TDS::result_columns($conn, TDS::column_names(self), TDS::column_types(self));
+on TDS::Row if ( self.sample ) -> event TDS::result_row($conn, self.values);
+on TDS::NBCRow if ( self.sample ) -> event TDS::result_row($conn, self.values);
 on TDS::TokenStream -> event TDS::response($conn, self.rows, self.row_count, self.errors);
 
 # Integrated authentication tokens, with the security package they belong to.
