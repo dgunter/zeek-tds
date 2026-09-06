@@ -7,6 +7,5 @@
 #open XXXX-XX-XX-XX-XX-XX
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	is_orig	msg_type	len	packets	session	rows	row_count	errors	messages	msg_types
 #types	time	string	addr	port	addr	port	bool	string	count	count	count	count	count	count	count	string
-XXXXXXXXXX.XXXXXX	CHhAvVGS1DHFjwGM9	172.19.0.1	61250	172.19.0.2	1433	T	prelogin	50	1	-	-	-	-	-	-
-XXXXXXXXXX.XXXXXX	CHhAvVGS1DHFjwGM9	172.19.0.1	61250	172.19.0.2	1433	F	tabular_result	35	1	-	0	0	0	-	-
+XXXXXXXXXX.XXXXXX	CHhAvVGS1DHFjwGM9	172.19.0.1	60576	172.19.0.2	1433	T	summary	115954	288	-	67	131	2	282	<tabular_result:141,attention:62,login7:1,prelogin:1,rpc:62,sql_batch:11,transaction_manager:4
 #close XXXX-XX-XX-XX-XX-XX

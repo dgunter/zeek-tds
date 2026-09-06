@@ -20,6 +20,22 @@ export {
 	## Also log INFO tokens (severity below 11) to tds_error.log.
 	const log_info_messages = F &redef;
 
+	## Per-log switches. tds_login, tds_sql_batch, tds_rpc and tds_error are on by
+	## default; each can be turned off on a busy network.
+	const log_logins = T &redef;
+	const log_sql_batches = T &redef;
+	const log_rpcs = T &redef;
+	const log_errors = T &redef;
+	## Include the rendered parameter list in tds_rpc.log (the widest column there).
+	const log_rpc_parameters = T &redef;
+
+	## How tds.log records messages. PER_MESSAGE writes one line per TDS message;
+	## SUMMARY writes one line per connection per :zeek:see:`TDS::summary_interval`
+	## with totals; DISABLED writes nothing.
+	type MessageLogMode: enum { PER_MESSAGE, SUMMARY, DISABLED };
+	const message_log_mode = PER_MESSAGE &redef;
+	const summary_interval = 1min &redef;
+
 	## Truncate logged SQL text, messages and parameter values to this many bytes
 	## (0 = no limit). Zeek itself caps a log field at
 	## :zeek:see:`Log::default_max_field_string_bytes` (4096 by default), so raise that
@@ -71,12 +87,20 @@ export {
 		len: count &log;
 		## Packets the message spanned.
 		packets: count &log;
+		## MARS session id when the connection multiplexes sessions (SMP).
+		session: count &log &optional;
 		## For server responses: rows returned in this message.
 		rows: count &log &optional;
 		## For server responses: rows affected as reported by DONE tokens.
 		row_count: count &log &optional;
 		## For server responses: ERROR tokens in this message.
 		errors: count &log &optional;
+		## SUMMARY mode: number of messages the line covers (msg_type is "summary",
+		## len and packets are totals, rows/row_count/errors are totals over responses).
+		messages: count &log &optional;
+		## SUMMARY mode: message types seen in the window, with counts; "<" marks
+		## server-to-client types.
+		msg_types: string &log &optional;
 	};
 
 	type LoginInfo: record {
@@ -182,7 +206,12 @@ export {
 		errors: count &default=0;
 		## Login not yet acknowledged.
 		login_pending: bool &default=F;
+		## The connection uses MARS session multiplexing.
+		mars: bool &default=F;
 		login_logged: bool &default=F;
+		## SUMMARY mode accumulator for tds.log.
+		summary: Info &optional;
+		summary_types: table[string] of count &optional;
 	};
 
 	global log_tds: event(rec: Info);
@@ -243,16 +272,69 @@ function emit_login(c: connection)
 	if ( ! l?$tds_version && ! l?$client_version && ! l?$server_product )
 		return;
 
-	Log::write(LOGIN_LOG, l);
+	if ( log_logins )
+		Log::write(LOGIN_LOG, l);
 	c$tds$login_logged = T;
 	}
 
-event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count, packets: count)
+function flush_summary(c: connection)
+	{
+	if ( ! c?$tds || ! c$tds?$summary )
+		return;
+
+	local s = c$tds$summary;
+	local parts: vector of string = vector();
+	for ( t, n in c$tds$summary_types )
+		parts += fmt("%s:%d", t, n);
+	sort(parts, strcmp);
+	s$msg_types = join_string_vec(parts, ",");
+	Log::write(LOG, s);
+	delete c$tds$summary;
+	delete c$tds$summary_types;
+	}
+
+event TDS::flush_summary_timer(c: connection)
+	{
+	if ( ! connection_exists(c$id) )
+		return;
+	flush_summary(c);
+	}
+
+function summarize(c: connection, info: Info)
+	{
+	if ( ! c$tds?$summary )
+		{
+		c$tds$summary = Info($ts=network_time(), $uid=c$uid, $id=c$id, $is_orig=T,
+		                     $msg_type="summary", $len=0, $packets=0, $messages=0,
+		                     $rows=0, $row_count=0, $errors=0);
+		c$tds$summary_types = table();
+		schedule summary_interval { TDS::flush_summary_timer(c) };
+		}
+
+	local s = c$tds$summary;
+	s$len += info$len;
+	s$packets += info$packets;
+	s$messages += 1;
+	local key = (info$is_orig ? "" : "<") + info$msg_type;
+	if ( key !in c$tds$summary_types )
+		c$tds$summary_types[key] = 0;
+	c$tds$summary_types[key] += 1;
+	if ( info?$rows )
+		{
+		s$rows += info$rows;
+		s$row_count += info$row_count;
+		s$errors += info$errors;
+		}
+	}
+
+event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count, packets: count, sid: count)
 	{
 	hook set_session(c);
 
 	local info = Info($ts=network_time(), $uid=c$uid, $id=c$id, $is_orig=is_orig,
 	                  $msg_type=packet_types[msg_type], $len=len, $packets=packets);
+	if ( c$tds$mars )
+		info$session = sid;
 
 	if ( ! is_orig && msg_type == 4 )
 		{
@@ -265,7 +347,17 @@ event TDS::message(c: connection, is_orig: bool, msg_type: count, len: count, pa
 	c$tds$row_count = 0;
 	c$tds$errors = 0;
 
-	Log::write(LOG, info);
+	if ( message_log_mode == PER_MESSAGE )
+		Log::write(LOG, info);
+	else if ( message_log_mode == SUMMARY )
+		summarize(c, info);
+	}
+
+event TDS::smp_session(c: connection, is_orig: bool, sid: count)
+	{
+	hook set_session(c);
+	c$tds$mars = T;
+	c$tds$login$mars = T;
 	}
 
 event TDS::response(c: connection, rows: count, row_count: count, errors: count)
@@ -368,7 +460,7 @@ event TDS::error_info(c: connection, is_error: bool, number: count, state: count
 		c$tds$login_pending = F;
 		}
 
-	if ( ! is_error && ! log_info_messages )
+	if ( ! log_errors || (! is_error && ! log_info_messages) )
 		return;
 
 	Log::write(ERROR_LOG, ErrorInfo($ts=network_time(), $uid=c$uid, $id=c$id, $is_error=is_error,
@@ -379,6 +471,8 @@ event TDS::error_info(c: connection, is_error: bool, number: count, state: count
 event TDS::sql_batch(c: connection, transaction_descriptor: count, query: string)
 	{
 	hook set_session(c);
+	if ( ! log_sql_batches )
+		return;
 	Log::write(SQL_BATCH_LOG, SQLBatchInfo($ts=network_time(), $uid=c$uid, $id=c$id,
 	                                       $transaction_descriptor=transaction_descriptor,
 	                                       $query=truncate(query)));
@@ -387,6 +481,8 @@ event TDS::sql_batch(c: connection, transaction_descriptor: count, query: string
 event TDS::transaction_manager_request(c: connection, request_type: count)
 	{
 	hook set_session(c);
+	if ( ! log_sql_batches )
+		return;
 	Log::write(SQL_BATCH_LOG, SQLBatchInfo($ts=network_time(), $uid=c$uid, $id=c$id,
 	                                       $transaction_descriptor=0,
 	                                       $query=fmt("<transaction manager: %s>", transaction_request_types[request_type])));
@@ -435,7 +531,10 @@ event TDS::rpc_request(c: connection, transaction_descriptor: count) &priority=-
 	for ( i in c$tds$rpc )
 		{
 		c$tds$rpc[i]$transaction_descriptor = transaction_descriptor;
-		Log::write(RPC_LOG, c$tds$rpc[i]);
+		if ( ! log_rpc_parameters )
+			c$tds$rpc[i]$parameters = vector();
+		if ( log_rpcs )
+			Log::write(RPC_LOG, c$tds$rpc[i]);
 		}
 	c$tds$rpc = vector();
 	}
@@ -447,6 +546,7 @@ event TDS::return_value(c: connection, name: string, typ: string, value: string)
 hook finalize_tds(c: connection)
 	{
 	emit_login(c);
+	flush_summary(c);
 	}
 
 # Log the login as soon as the server has answered it, so long-lived sessions
