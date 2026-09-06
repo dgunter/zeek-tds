@@ -21,7 +21,8 @@ def check(tool, cmd, files):
     if shutil.which(tool) is None:
         print(f"{tool}: not installed, skipped")
         return
-    rules[tool] = {"id": "format", "name": f"{tool} formatting", "description": f"File differs from {tool} output.",
+    # Rule ids must be unique across the whole report, so key them by tool.
+    rules[tool] = {"id": tool, "name": f"{tool} formatting", "description": f"File differs from {tool} output.",
                    "engineId": tool, "cleanCodeAttribute": "FORMATTED",
                    "impacts": [{"softwareQuality": "MAINTAINABILITY", "severity": "LOW"}]}
     for path in files:
@@ -35,7 +36,7 @@ def check(tool, cmd, files):
         changed = sum(1 for l in diff if l.startswith(("+", "-")) and not l.startswith(("+++", "---")))
         rel = str(path.relative_to(root))
         print(f"{tool}: {rel} differs ({changed} lines, from line {line})")
-        issues.append({"ruleId": "format", "engineId": tool,
+        issues.append({"ruleId": tool, "engineId": tool,
                        "primaryLocation": {"message": f"not formatted with {tool}: {changed} lines differ",
                                            "filePath": rel, "textRange": {"startLine": line}}})
 
