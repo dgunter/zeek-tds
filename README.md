@@ -156,10 +156,10 @@ Here the analyzer resolves the number, renders every parameter as
 it into `statement`:
 
 ```
-#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	transaction_descriptor	procedure	proc_id	with_recompile	parameters	statement	handle
-#types	time	string	addr	port	addr	port	count	string	count	bool	vector[string]	string	string
-1788649652.343290	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	sp_executesql	10	F	@p1 nvarchar(max) = SELECT COUNT(*) FROM dbo.readings WHERE value > @P1,@p2 nvarchar(max) = @P1 FLOAT,@P1 floatn(8) = 20	SELECT COUNT(*) FROM dbo.readings WHERE value > @P1	-
-1788649652.349416	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	dbo.usp_get_readings	-	F	@p1 nvarchar(max) = PUMP-00%,@p2 floatn(8) = 10,@p3 intn(4) output = 0	-	-
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	transaction_descriptor	procedure	proc_id	with_recompile	parameters	statement	handle	output	return_status
+#types	time	string	addr	port	addr	port	count	string	count	bool	vector[string]	string	string	vector[string]	int
+1788649652.343290	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	sp_executesql	10	F	@p1 nvarchar(max) = SELECT COUNT(*) FROM dbo.readings WHERE value > @P1,@p2 nvarchar(max) = @P1 FLOAT,@P1 floatn(8) = 20	SELECT COUNT(*) FROM dbo.readings WHERE value > @P1	-	-	0
+1788649652.349416	CGxaQC26449facJ2Q5	172.19.0.1	60576	172.19.0.2	1433	0	dbo.usp_get_readings	-	F	@p1 nvarchar(max) = PUMP-00%,@p2 floatn(8) = 10,@p3 intn(4) output = 0	-	-	@out1 intn(4) = 8	7
 ```
 
 The first line is a parameterised query: the statement, its parameter
@@ -175,9 +175,10 @@ procedure      dbo.usp_get_readings
 parameters     @tag nvarchar(8) = PUMP-00%,@min floatn(8) = 15,@count intn(4) output = NULL
 output         @count intn(4) = 6
 return_status  7
-``` Types are named the way SQL Server names them, with the
-wire's nullable variants: `intn(4)` is a nullable `int`, `floatn(8)` a
-nullable `float`.
+```
+
+Types are named the way SQL Server names them, with the wire's nullable
+variants: `intn(4)` is a nullable `int`, `floatn(8)` a nullable `float`.
 
 Earlier in the same session the client inserted sixty rows, each an
 `sp_executesql` with fifteen typed parameters. One of them, wrapped for
@@ -369,6 +370,28 @@ Sites that ship logs to Elasticsearch or Splunk usually run Zeek with
 ```json
 {"ts":1788649654.385044,"uid":"CHoXq91qvuIN1IliUc","id.orig_h":"172.19.0.1","id.orig_p":60578,"id.resp_h":"172.19.0.2","id.resp_p":1433,"is_error":true,"number":18456,"state":1,"class":14,"message":"Login failed for user 'sa'.","server_name":"sqledge01","procedure":"","line":1}
 ```
+
+## Detections
+
+The package ships a detection script, `detect.zeek`, loaded by default, that
+turns the most common hunting questions into Zeek notices. Nothing fires on a
+quiet network: thresholds are conservative and the noisier detections are off
+until switched on.
+
+| Notice | Fires when | Tuning |
+| --- | --- | --- |
+| `TDS::Login_Bruteforce` | one source fails `bruteforce_threshold` logins (10) within `bruteforce_interval` (10 min), across any number of servers | both redef-able |
+| `TDS::Dangerous_Statement` | a SQL batch, RPC procedure name or RPC parameter value matches `dangerous_patterns`: `xp_cmdshell`, OLE automation, registry and file procedures, `sp_configure` enabling them, `OPENROWSET`, `BULK INSERT`, linked servers, CLR assemblies, startup procedures, login and role changes, `sys.sql_logins`, SQL Agent jobs, `WAITFOR DELAY`, backups to UNC paths | extend or replace the pattern; parameter matching covers `sp_executesql` |
+| `TDS::Scan` | one source completes PRELOGIN with `scan_threshold` (5) distinct servers within `scan_interval` without ever logging in, which is what nmap's ms-sql scripts leave behind | both redef-able |
+| `TDS::Large_Result` | a result set reaches `large_result_rows` (100000) or `large_result_bytes` (50 MB) | both redef-able |
+| `TDS::Bulk_Load` | a BULK LOAD message | off by default (`detect_bulk_load`), bulk loads are routine for ETL |
+| `TDS::Cleartext_Password` | a LOGIN7 with a password outside TLS | off by default (`detect_cleartext_password`) |
+| `TDS::New_Application` | an application name and library not seen against that server in `new_application_memory` (7 days) | off by default (`detect_new_applications`), every application fires once after start |
+
+Notices carry the connection, so they join to every log above, and each has an
+`identifier` so Zeek's notice suppression collapses repeats. The mapping from
+logs and notices to ATT&CK and ICS ATT&CK techniques is in
+[docs/attack-coverage.md](docs/attack-coverage.md).
 
 ## What to hunt for
 
